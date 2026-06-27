@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-white text-stone-900;
+  }
+}
+
+@layer utilities {
+  .accent-rose-500 {
+    accent-color: #f43f5e;
+  }
+}

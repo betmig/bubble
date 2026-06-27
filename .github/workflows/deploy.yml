@@ -1,0 +1,32 @@
+name: Deploy Bubble to VPS
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 2222
+          script: |
+            cd ~
+            rm -rf bubble
+            git clone https://x-access-token:${{ secrets.GH_DEPLOY_TOKEN }}@github.com/${{ github.repository }}.git bubble
+            cd bubble
+            mkdir -p backend/data
+            curl -fsSL \
+              -H "Authorization: Bearer ${{ secrets.KAGGLE_TOKEN }}" \
+              -o /tmp/spotify.zip \
+              "https://www.kaggle.com/api/v1/datasets/download/maharshipandya/-spotify-tracks-dataset"
+            unzip -jo /tmp/spotify.zip "*.csv" -d /tmp/kaggle_out
+            mv /tmp/kaggle_out/*.csv backend/data/spotify_tracks.csv
+            rm -rf /tmp/spotify.zip /tmp/kaggle_out
+            docker compose up -d --build --remove-orphans
+            docker image prune -f

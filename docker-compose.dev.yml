@@ -1,0 +1,35 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: bubble_backend_dev
+    restart: unless-stopped
+    environment:
+      - DATASET_PATH=/app/data/spotify_tracks.csv
+      - PORT=8000
+    volumes:
+      - ./backend:/app
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - bubble_dev_net
+
+  frontend:
+    image: node:20-alpine
+    container_name: bubble_frontend_dev
+    working_dir: /app
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    networks:
+      - bubble_dev_net
+
+networks:
+  bubble_dev_net:
+    driver: bridge

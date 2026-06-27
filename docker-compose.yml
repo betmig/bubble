@@ -1,0 +1,41 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: bubble_backend
+    restart: unless-stopped
+    environment:
+      - DATASET_PATH=/app/data/spotify_tracks.csv
+      - PORT=8000
+    volumes:
+      - ./backend/data:/app/data:ro
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15s
+      retries: 3
+    networks:
+      - bubble_net
+      - proxy_network
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: bubble_frontend
+    restart: unless-stopped
+    expose:
+      - "80"
+    networks:
+      - bubble_net
+      - proxy_network
+
+networks:
+  bubble_net:
+    driver: bridge
+  proxy_network:
+    external: true
+    name: npm_network
