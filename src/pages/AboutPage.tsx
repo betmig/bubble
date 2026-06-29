@@ -9,7 +9,7 @@ export function AboutPage() {
           <span className="text-3xl">🫧</span>
           <div>
             <h1 className="text-2xl font-bold text-stone-800">About Bubble</h1>
-            <p className="text-stone-500 text-sm">CM3005 Data Science project</p>
+            <p className="text-stone-500 text-sm"></p>
           </div>
         </div>
 
