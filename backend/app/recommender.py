@@ -1,17 +1,19 @@
 """
-Core recommendation pipeline for Bubble (Iteration 2).
+Core recommendation pipeline for Bubble (Iteration 2.1).
 
 Pipeline stages:
   1. Load and validate the Spotify CSV dataset.
   2. Feature selection and MinMax normalisation.
   3. Compute custom intimacy_score per track.
   4. Assign Russell quadrant (valence x energy plane) using fixed 0.5 thresholds.
-  5. Expose recommendation methods:
+  5. Precompute normalised search fields for intelligent seed search.
+  6. Expose recommendation methods:
        A) Weighted cosine similarity (with configurable feature-weight profiles)
        B) KNN via scikit-learn NearestNeighbors
        C) Hybrid (weighted cosine + intimacy blend)
-  6. Optional destination-mode soft scoring (calm-positive preference).
-  7. Optional MMR (Maximum Marginal Relevance) reranking for diversity.
+  7. Similarity-first candidate pool safeguard (Iteration 2.1).
+  8. Optional destination-mode soft scoring (calm-positive preference).
+  9. Optional MMR (Maximum Marginal Relevance) reranking for diversity.
 
 Affect labels (Q1-Q4) are heuristic categories derived from Spotify valence and
 energy.  They are a feature-engineering framework, NOT ground-truth emotional
@@ -22,10 +24,13 @@ not a proven intimacy or emotion label.
 
 import logging
 import os
+import re
+import unicodedata
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+from rapidfuzz import fuzz, process
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
@@ -76,6 +81,20 @@ FEATURE_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
         "tempo": 0.5,
         "loudness": 0.5,
     },
+    # Profile 4 (Iteration 2.1): balanced hybrid — mild affect emphasis that
+    # keeps recommendations recognisably related to the seed while allowing
+    # some cross-genre discovery without excessive drift.
+    "balanced": {
+        "valence": 1.3,
+        "energy": 1.3,
+        "danceability": 0.8,
+        "acousticness": 1.2,
+        "instrumentalness": 0.8,
+        "speechiness": 1.0,
+        "liveness": 0.6,
+        "tempo": 0.8,
+        "loudness": 0.8,
+    },
 }
 
 VALID_PROFILES = list(FEATURE_WEIGHT_PROFILES.keys())
@@ -85,6 +104,43 @@ DESTINATION_WEIGHT_DEFAULT = 0.3
 
 # MMR defaults
 MMR_LAMBDA_DEFAULT = 0.75
+
+# Candidate pool default — similarity-first safeguard
+CANDIDATE_POOL_DEFAULT: Optional[int] = None  # None => max(100, top_k * 10)
+
+# -- Search constants -----------------------------------------------------------
+
+FUZZY_SCORE_CUTOFF = 70
+SEARCH_RESULT_LIMIT = 15
+
+
+# -- Text normalisation helper --------------------------------------------------
+
+def _normalise_text(value) -> str:
+    """Normalise a text field for search matching.
+
+    Steps:
+      - safe conversion of null values to empty string
+      - lowercase
+      - Unicode NFKD normalisation + accent folding
+      - punctuation/separator replacement with spaces
+      - whitespace collapse + trim
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = str(value)
+    if value.lower() in ("nan", "none", "null"):
+        return ""
+    text = value.lower()
+    # Unicode normalisation + accent folding
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii")
+    # Replace punctuation/separators with spaces
+    text = re.sub(r"[^\w\s]", " ", text)
+    # Collapse whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 # -- Data loading & preprocessing ---------------------------------------------
@@ -148,6 +204,11 @@ class BubbleRecommender:
             lambda r: assign_quadrant(r["valence_norm"], r["energy_norm"]), axis=1
         )
 
+        # Precompute search fields (Iteration 2.1)
+        df["trackname_search"] = df["track_name"].apply(_normalise_text)
+        df["artistname_search"] = df["artist_name"].apply(_normalise_text)
+        df["combined_search"] = df["trackname_search"] + " " + df["artistname_search"]
+
         self.df = df
         self.feature_matrix = normed
         self._knn = None
@@ -156,7 +217,15 @@ class BubbleRecommender:
 
     def load_from_df(self, df: pd.DataFrame, feature_matrix: np.ndarray) -> None:
         """Load from an already-preprocessed DataFrame and matrix (for tests)."""
-        self.df = df.reset_index(drop=True)
+        df = df.reset_index(drop=True)
+        # Precompute search fields if not already present
+        if "trackname_search" not in df.columns:
+            df["trackname_search"] = df["track_name"].apply(_normalise_text)
+        if "artistname_search" not in df.columns:
+            df["artistname_search"] = df["artist_name"].apply(_normalise_text)
+        if "combined_search" not in df.columns:
+            df["combined_search"] = df["trackname_search"] + " " + df["artistname_search"]
+        self.df = df
         self.feature_matrix = np.asarray(feature_matrix, dtype=float)
         self._knn = None
         self._loaded = True
@@ -175,19 +244,157 @@ class BubbleRecommender:
         rows = self.df[self.df["track_id"] == track_id]
         return rows.iloc[0] if not rows.empty else None
 
-    def search_tracks(self, query: str, limit: int = 10) -> list[dict]:
-        """Case-insensitive substring search over track_name + artist_name."""
+    # -- Intelligent search (Iteration 2.1) -------------------------------------
+
+    def search_tracks(self, query: str, limit: int = SEARCH_RESULT_LIMIT) -> list[dict]:
+        """
+        Deterministic tiered search over track_name + artist_name.
+
+        Ranking tiers (lower tier = stronger match):
+          0: exact combined title + artist match (natural or reversed ordering)
+          1: exact artist match OR exact track-title match
+          2: all query tokens occur across combined title + artist text
+          3: full query prefix matches title, artist, or combined text
+          4: token-prefix matching
+          5: direct partial substring matching
+          6: RapidFuzz fuzzy fallback (token_set_ratio, cutoff=70)
+
+        Within a tier, deterministic ordering:
+          1. textual match strength / fuzzy score
+          2. popularity descending (tie-breaker only)
+          3. artist alphabetical
+          4. title alphabetical
+          5. track ID alphabetical
+        """
         self._ensure_loaded()
-        q = query.lower()
-        mask = (
-            self.df["track_name"].str.lower().str.contains(q, na=False)
-            | self.df["artist_name"].str.lower().str.contains(q, na=False)
-        )
-        matches = self.df[mask].head(limit)
-        return [
-            {"id": row["track_id"], "name": row["track_name"], "artist": row["artist_name"]}
-            for _, row in matches.iterrows()
-        ]
+
+        q = _normalise_text(query)
+        if not q:
+            return []
+
+        q_tokens = q.split()
+        q_token_set = set(q_tokens)
+
+        results: list[dict] = []
+        seen_ids: set[str] = set()
+
+        df = self.df
+
+        # Helper to build a result dict with sort keys
+        def make_entry(idx: int, tier: int, score: float) -> dict:
+            row = df.iloc[idx]
+            return {
+                "id": row["track_id"],
+                "name": row["track_name"],
+                "artist": row["artist_name"],
+                "match_type": tier,
+                "search_score": round(score, 2),
+                "_tier": tier,
+                "_score": score,
+                "_popularity": int(row.get("popularity", 0)),
+                "_artist": row["artist_name"],
+                "_title": row["track_name"],
+                "_track_id": row["track_id"],
+            }
+
+        # Pre-compute normalised fields for all rows
+        tracknames = df["trackname_search"].values
+        artistnames = df["artistname_search"].values
+        combined = df["combined_search"].values
+
+        for i in range(len(df)):
+            tn = tracknames[i]
+            an = artistnames[i]
+            cb = combined[i]
+            tid = df.iloc[i]["track_id"]
+
+            if tid in seen_ids:
+                continue
+
+            tier = -1
+            score = 0.0
+
+            # Tier 0: exact combined match (natural or reversed ordering)
+            if q == tn + " " + an or q == an + " " + tn:
+                tier = 0
+                score = 100.0
+            # Tier 1: exact artist match OR exact track-title match
+            elif q == an or q == tn:
+                tier = 1
+                score = 100.0
+            # Tier 2: all query tokens occur across combined text
+            elif q_token_set and q_token_set.issubset(set(cb.split())):
+                tier = 2
+                # Score by how tightly tokens match
+                score = 90.0 - (len(cb.split()) - len(q_tokens)) * 0.5
+            # Tier 3: full query prefix matches title, artist, or combined
+            elif tn.startswith(q) or an.startswith(q) or cb.startswith(q):
+                tier = 3
+                score = 85.0
+            # Tier 4: token-prefix matching (every token is a prefix of some word in combined)
+            elif q_tokens and all(
+                any(word.startswith(tok) for word in cb.split())
+                for tok in q_tokens
+            ):
+                tier = 4
+                score = 80.0
+            # Tier 5: partial substring
+            elif q in cb:
+                tier = 5
+                # Score by relative position of match
+                pos = cb.find(q)
+                score = 75.0 - pos * 0.01
+
+            if tier >= 0:
+                entry = make_entry(i, tier, score)
+                results.append(entry)
+                seen_ids.add(tid)
+
+        # Tier 6: RapidFuzz fallback — only if we haven't filled the limit
+        if len(results) < limit:
+            fuzzy_limit = max(limit * 5, 50)
+            # WRatio combines multiple scorers (ratio, partial_ratio,
+            # token_sort_ratio, token_set_ratio, partial_token_set_ratio)
+            # and is more robust for general-purpose fuzzy matching.
+            fuzzy_results = process.extract(
+                q,
+                combined.tolist(),
+                scorer=fuzz.WRatio,
+                score_cutoff=FUZZY_SCORE_CUTOFF,
+                limit=fuzzy_limit,
+            )
+            for match_result in fuzzy_results:
+                match_str, fuzzy_score, match_idx = match_result[0], match_result[1], match_result[2]
+                tid = df.iloc[match_idx]["track_id"]
+                if tid in seen_ids:
+                    continue
+                entry = make_entry(match_idx, 6, float(fuzzy_score))
+                results.append(entry)
+                seen_ids.add(tid)
+
+        # Sort: tier ascending, then score descending, then popularity desc,
+        # then artist alpha, then title alpha, then track_id alpha
+        results.sort(key=lambda e: (
+            e["_tier"],
+            -e["_score"],
+            -e["_popularity"],
+            e["_artist"],
+            e["_title"],
+            e["_track_id"],
+        ))
+
+        # Trim to limit and clean up internal keys
+        trimmed = results[:limit]
+        output = []
+        for e in trimmed:
+            output.append({
+                "id": e["id"],
+                "name": e["name"],
+                "artist": e["artist"],
+                "match_type": e["match_type"],
+                "search_score": e["search_score"],
+            })
+        return output
 
     # -- Recommendation entry point ---------------------------------------------
 
@@ -203,6 +410,7 @@ class BubbleRecommender:
         destination_weight: float = DESTINATION_WEIGHT_DEFAULT,
         apply_mmr: bool = False,
         mmr_lambda: float = MMR_LAMBDA_DEFAULT,
+        candidate_pool_size: Optional[int] = CANDIDATE_POOL_DEFAULT,
         emotional_filter: Optional[str] = None,  # deprecated, kept for backward compat
     ) -> dict:
         """
@@ -214,23 +422,25 @@ class BubbleRecommender:
         top_k : int
         method : str -- "cosine" | "knn" | "hybrid"
         alpha : float in [0, 1] -- hybrid blend weight (1=pure cosine, 0=pure intimacy)
-        feature_weight_profile : str -- one of "equal", "no_danceability", "affect_emphasis"
+        feature_weight_profile : str -- one of "equal", "no_danceability",
+            "affect_emphasis", "balanced"
         custom_weights : dict | None -- override weights; validated against FEATURE_COLS
         destination_mode : str -- "none" | "calm_positive"
-            "none": pure seed-based ranking.
-            "calm_positive": soft scoring bonus for high-valence, low-energy tracks.
-            Replaces the deprecated emotional_filter hard candidate restriction.
         destination_weight : float in [0, 1] -- blend weight for destination score
         apply_mmr : bool -- if True, rerank candidates with MMR for diversity
         mmr_lambda : float in [0, 1] -- 1.0 = no diversity penalty
+        candidate_pool_size : int | None -- similarity-first candidate pool.
+            None defaults to max(100, top_k * 10). The pool is selected by
+            content similarity only (no genre filter), then hybrid scoring
+            and optional MMR are applied within it.
         emotional_filter : str | None -- DEPRECATED. Hard Q-filter on candidate pool.
-            Retained for backward compatibility; prefer destination_mode.
 
         Returns
         -------
         dict with keys:
             "recommendations" : list[dict]
-            "metadata" : dict (profile, alpha, destination_mode, mmr settings, method)
+            "metadata" : dict (profile, alpha, destination_mode, mmr settings,
+                              method, candidate_pool_size)
         """
         self._ensure_loaded()
 
@@ -244,46 +454,55 @@ class BubbleRecommender:
         seed_idx = self.df.index[self.df["track_id"] == seed_track_id][0]
         seed_vec = self.feature_matrix[seed_idx].reshape(1, -1)
 
-        # Candidate pool (optionally restricted by deprecated emotional_filter)
-        candidates = self.df.copy()
-        candidate_mask = np.ones(len(self.df), dtype=bool)
-
-        if emotional_filter:
-            mask = (candidates["quadrant"] == emotional_filter).values
-            candidate_mask &= mask
+        # Resolve candidate pool size
+        if candidate_pool_size is None:
+            candidate_pool_size = max(100, top_k * 10)
 
         # Always exclude seed
-        candidate_mask &= (self.df["track_id"] != seed_track_id).values
+        candidate_mask = (self.df["track_id"] != seed_track_id).values
 
-        candidates = self.df[candidate_mask].reset_index(drop=True)
-        candidate_matrix = self.feature_matrix[candidate_mask]
+        # Deprecated emotional_filter
+        if emotional_filter:
+            candidate_mask &= (self.df["quadrant"] == emotional_filter).values
+
+        # Step 1: Compute similarity-first scores on the full candidate set
+        # to determine the candidate pool (no genre filter, no destination yet)
+        all_candidate_matrix = self.feature_matrix[candidate_mask]
+        all_candidate_df = self.df[candidate_mask].reset_index(drop=True)
+
+        if method == "cosine":
+            sim_scores = _weighted_cosine_scores(seed_vec, all_candidate_matrix, weights)
+        elif method == "knn":
+            sim_scores = _knn_scores(seed_vec, all_candidate_matrix)
+        elif method == "hybrid":
+            sim_scores = _hybrid_scores(
+                seed_vec, all_candidate_matrix,
+                all_candidate_df["intimacy_score"].values, alpha, weights,
+            )
+        else:
+            raise ValueError(f"Unknown method: {method}")
+
+        # Step 2: Select candidate pool by similarity only (top N by primary score)
+        pool_size = min(candidate_pool_size, len(all_candidate_df))
+        pool_indices = np.argsort(sim_scores)[::-1][:pool_size]
+
+        candidates = all_candidate_df.iloc[pool_indices].reset_index(drop=True)
+        candidate_matrix = all_candidate_matrix[pool_indices]
+        scores = sim_scores[pool_indices]
 
         if len(candidates) == 0:
             return {"recommendations": [], "metadata": _build_metadata(
                 method, alpha, feature_weight_profile, weights,
                 destination_mode, destination_weight, apply_mmr, mmr_lambda,
+                candidate_pool_size,
             )}
 
-        # Compute primary relevance scores
-        if method == "cosine":
-            scores = _weighted_cosine_scores(seed_vec, candidate_matrix, weights)
-        elif method == "knn":
-            scores = _knn_scores(seed_vec, candidate_matrix)
-        elif method == "hybrid":
-            scores = _hybrid_scores(
-                seed_vec, candidate_matrix,
-                candidates["intimacy_score"].values, alpha, weights,
-            )
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
-        # Apply destination-mode soft bonus
+        # Step 3: Apply destination-mode soft bonus within the pool
         if destination_mode == "calm_positive":
             dest_scores = _destination_scores(
                 candidates["valence_norm"].values,
                 candidates["energy_norm"].values,
             )
-            # Normalise destination scores to [0, 1] before blending
             d_min, d_max = dest_scores.min(), dest_scores.max()
             if d_max > d_min:
                 dest_norm = (dest_scores - d_min) / (d_max - d_min)
@@ -291,7 +510,7 @@ class BubbleRecommender:
                 dest_norm = np.zeros_like(dest_scores)
             scores = (1.0 - destination_weight) * scores + destination_weight * dest_norm
 
-        # MMR reranking or simple top-k
+        # Step 4: MMR reranking or simple top-k within the pool
         if apply_mmr:
             top_indices = _mmr_rerank(
                 scores, candidate_matrix, weights, top_k, mmr_lambda,
@@ -325,6 +544,7 @@ class BubbleRecommender:
         metadata = _build_metadata(
             method, alpha, feature_weight_profile, weights,
             destination_mode, destination_weight, apply_mmr, mmr_lambda,
+            candidate_pool_size,
         )
 
         return {"recommendations": results, "metadata": metadata}
@@ -352,13 +572,7 @@ def _resolve_weights(
 
 
 def validate_weights(weights: dict[str, float]) -> None:
-    """Validate a feature-weight dictionary.
-
-    Raises ValueError if:
-      - Any key is not a known feature name.
-      - Any value is not a non-negative number.
-      - All values are zero (no positive weight).
-    """
+    """Validate a feature-weight dictionary."""
     if not isinstance(weights, dict):
         raise ValueError("Feature weights must be a dictionary.")
 
@@ -393,13 +607,7 @@ def _weighted_cosine_scores(
     matrix: np.ndarray,
     weights: dict[str, float],
 ) -> np.ndarray:
-    """Weighted cosine similarity.
-
-    Multiplies both the seed and every candidate vector by sqrt(weight) before
-    computing cosine similarity.  This preserves the intended weighted
-    dot-product geometry: features with higher weights contribute more to the
-    similarity score.
-    """
+    """Weighted cosine similarity."""
     w = _weight_sqrt_vector(weights)
     return cosine_similarity(seed_vec * w, matrix * w)[0]
 
@@ -448,11 +656,7 @@ def _destination_scores(
     valence_norm: np.ndarray,
     energy_norm: np.ndarray,
 ) -> np.ndarray:
-    """Continuous calm-positive destination score.
-
-    Rewards high valence and low energy continuously (no hard quadrant cutoff).
-    Returns values in [0, 1]: valence * (1 - energy).
-    """
+    """Continuous calm-positive destination score."""
     return valence_norm * (1.0 - energy_norm)
 
 
@@ -471,21 +675,16 @@ def _mmr_rerank(
     Selects items greedily:
       MMR(c) = lambda * relevance(c) - (1 - lambda) * max_sim(c, selected)
 
-    Candidate-candidate similarity uses the same weighted feature representation
-    as the selected profile.
-
     Returns a list of indices into the candidate array.
     """
     pool_size = max(50, top_k * 5)
     pool_size = min(pool_size, len(relevance_scores))
 
-    # Pre-select a larger candidate pool by relevance
     pool_indices = np.argsort(relevance_scores)[::-1][:pool_size]
 
     w = _weight_sqrt_vector(weights)
     weighted_matrix = candidate_matrix[pool_indices] * w
 
-    # Normalise relevance to [0, 1] for comparable MMR scale
     rel = relevance_scores[pool_indices]
     r_min, r_max = rel.min(), rel.max()
     if r_max > r_min:
@@ -532,6 +731,7 @@ def _build_metadata(
     destination_weight: float,
     apply_mmr: bool,
     mmr_lambda: float,
+    candidate_pool_size: Optional[int] = None,
 ) -> dict:
     return {
         "method": method,
@@ -542,6 +742,7 @@ def _build_metadata(
         "destination_weight": destination_weight,
         "apply_mmr": apply_mmr,
         "mmr_lambda": mmr_lambda,
+        "candidate_pool_size": candidate_pool_size,
     }
 
 
@@ -550,15 +751,6 @@ def _build_metadata(
 def assign_quadrant(valence: float, energy: float) -> str:
     """
     Map (valence, energy) to a Russell circumplex quadrant.
-
-    Uses fixed 0.5 thresholds on normalised values.  These thresholds are
-    consistent across the backend and the notebook.
-
-    Quadrants are heuristic candidate regions, not proven emotional labels:
-      Q1: high valence, high energy  -- high-arousal positive region
-      Q2: low valence,  high energy  -- high-arousal negative region
-      Q3: low valence,  low energy   -- low-arousal negative region
-      Q4: high valence, low energy   -- calm-positive destination region
     """
     high_v = valence >= 0.5
     high_e = energy >= 0.5

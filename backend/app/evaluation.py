@@ -1,15 +1,13 @@
 """
-Offline evaluation metrics for Bubble (Iteration 2).
+Offline evaluation metrics for Bubble (Iteration 2.1).
 
 Metrics
 -------
 precision_at_k       : fraction of top-K recommendations sharing the seed's genre
                        (genre-match proxy, NOT ground-truth relevance)
-intra_list_diversity : average pairwise cosine distance within a recommendation list,
-                       using the complete weighted feature set
+intra_list_diversity : average pairwise cosine distance within a recommendation list
 catalogue_coverage   : unique recommended tracks across many seeds / total catalogue
-single_list_coverage : unique tracks in a single list / total catalogue (renamed to
-                       avoid misleading "catalogue coverage" interpretation)
+single_list_coverage : unique tracks in a single list / total catalogue
 
 Batch evaluation
 ----------------
@@ -19,8 +17,8 @@ evaluate_batch       : runs multiple seeds through specified configurations and
 
 Comparison utility
 ------------------
-compare_configurations : evaluates four required configurations and returns a
-                         pandas DataFrame + CSV export.
+compare_configurations : evaluates configurations and returns a pandas DataFrame.
+Iteration 2.1 adds comparison configs for relevance tuning.
 """
 
 import os
@@ -42,12 +40,7 @@ def precision_at_k(
     seed_genre: str,
     k: int,
 ) -> float:
-    """
-    Fraction of the top-K recommended tracks whose genre matches the seed genre.
-
-    This is a genre-match PROXY for offline evaluation, not ground-truth
-    relevance.  User ratings are needed for final relevance validation.
-    """
+    """Fraction of the top-K recommended tracks whose genre matches the seed genre."""
     top = recommendations[:k]
     if not top:
         return 0.0
@@ -59,22 +52,7 @@ def intra_list_diversity(
     recommendations: list[dict],
     feature_cols: list[str] | None = None,
 ) -> float:
-    """
-    Average pairwise cosine distance within the recommendation list.
-
-    Uses the complete weighted feature set by default (all nine normalised
-    audio features) rather than only valence, energy, danceability, and
-    acousticness as in iteration 1.
-
-    Parameters
-    ----------
-    recommendations : list of recommendation dicts with numeric audio features
-    feature_cols    : feature keys to use; defaults to all nine features
-
-    Returns
-    -------
-    float in [0, 1], or 0.0 if fewer than 2 recommendations
-    """
+    """Average pairwise cosine distance within the recommendation list."""
     if feature_cols is None:
         feature_cols = [
             "valence", "energy", "danceability", "acousticness",
@@ -102,15 +80,7 @@ def catalogue_coverage(
     all_recommended_ids: list[str],
     total_track_count: int,
 ) -> float:
-    """
-    Fraction of the catalogue that appeared in any recommendation list across
-    multiple seeds.
-
-    Parameters
-    ----------
-    all_recommended_ids : flat list of track_ids from multiple recommendation calls
-    total_track_count   : total number of tracks in the dataset
-    """
+    """Fraction of the catalogue that appeared in any recommendation list."""
     if total_track_count == 0:
         return 0.0
     unique = len(set(all_recommended_ids))
@@ -121,12 +91,7 @@ def single_list_coverage(
     recommendations: list[dict],
     total_track_count: int,
 ) -> float:
-    """
-    Fraction of the catalogue covered by a single recommendation list.
-
-    Renamed from iteration-1 'coverage' to avoid misleading interpretation.
-    Catalogue coverage should be computed across many seeds, not one list.
-    """
+    """Fraction of the catalogue covered by a single recommendation list."""
     if total_track_count == 0:
         return 0.0
     unique = len(set(r["track_id"] for r in recommendations))
@@ -139,9 +104,7 @@ def evaluate_single(
     k: int,
     total_tracks: int,
 ) -> dict:
-    """
-    Run all single-list evaluation metrics for one recommendation list.
-    """
+    """Run all single-list evaluation metrics for one recommendation list."""
     return {
         "precision_at_k": precision_at_k(recommendations, seed_genre, k),
         "single_list_coverage": single_list_coverage(recommendations, total_tracks),
@@ -164,33 +127,12 @@ def evaluate_batch(
     destination_weight: float = 0.3,
     apply_mmr: bool = False,
     mmr_lambda: float = 0.75,
+    candidate_pool_size: int | None = None,
     config_name: str = "",
 ) -> dict:
-    """
-    Evaluate a single configuration across multiple seeds.
-
-    Parameters
-    ----------
-    rec : BubbleRecommender instance (must be loaded)
-    seed_ids : deterministic list of seed track IDs, or None to sample
-    n_seeds : number of seeds to sample if seed_ids is None
-    k : top_k for recommendations
-    random_state : reproducible random sampling seed
-    config_name : label for this configuration in output
-
-    Returns
-    -------
-    dict with:
-      - config parameters
-      - mean and std of precision_at_k
-      - mean and std of intra_list_diversity
-      - catalogue_coverage (across all seeds)
-      - n_seeds_evaluated
-      - all_recommended_ids
-    """
+    """Evaluate a single configuration across multiple seeds."""
     rec._ensure_loaded()
 
-    # Resolve seed IDs
     if seed_ids is None:
         rng = np.random.RandomState(random_state)
         all_ids = rec.df["track_id"].tolist()
@@ -212,6 +154,7 @@ def evaluate_batch(
             destination_weight=destination_weight,
             apply_mmr=apply_mmr,
             mmr_lambda=mmr_lambda,
+            candidate_pool_size=candidate_pool_size,
         )
         recs = result["recommendations"]
         if not recs:
@@ -237,6 +180,7 @@ def evaluate_batch(
         "destination_weight": destination_weight,
         "apply_mmr": apply_mmr,
         "mmr_lambda": mmr_lambda,
+        "candidate_pool_size": candidate_pool_size,
         "k": k,
         "n_seeds_evaluated": n_evaluated,
         "precision_at_k_mean": float(np.mean(precision_scores)) if precision_scores else 0.0,
@@ -289,6 +233,77 @@ REQUIRED_CONFIGS = [
     },
 ]
 
+# Iteration 2.1 comparison configurations for relevance tuning
+ITERATION21_CONFIGS = [
+    # A. Iteration-1 baseline
+    {
+        "config_name": "iter21_baseline",
+        "method": "cosine",
+        "alpha": 0.7,
+        "feature_weight_profile": "equal",
+        "destination_mode": "none",
+        "apply_mmr": False,
+        "mmr_lambda": 0.75,
+    },
+    # B. Current iteration-2 hybrid + MMR
+    {
+        "config_name": "iter21_hybrid_affect_mmr",
+        "method": "hybrid",
+        "alpha": 0.70,
+        "feature_weight_profile": "affect_emphasis",
+        "destination_mode": "none",
+        "apply_mmr": True,
+        "mmr_lambda": 0.75,
+    },
+    # C. Balanced hybrid without MMR — alpha tests
+    {
+        "config_name": "iter21_balanced_a080_no_mmr",
+        "method": "hybrid",
+        "alpha": 0.80,
+        "feature_weight_profile": "balanced",
+        "destination_mode": "none",
+        "apply_mmr": False,
+        "mmr_lambda": 0.75,
+    },
+    {
+        "config_name": "iter21_balanced_a085_no_mmr",
+        "method": "hybrid",
+        "alpha": 0.85,
+        "feature_weight_profile": "balanced",
+        "destination_mode": "none",
+        "apply_mmr": False,
+        "mmr_lambda": 0.75,
+    },
+    {
+        "config_name": "iter21_balanced_a090_no_mmr",
+        "method": "hybrid",
+        "alpha": 0.90,
+        "feature_weight_profile": "balanced",
+        "destination_mode": "none",
+        "apply_mmr": False,
+        "mmr_lambda": 0.75,
+    },
+    # D. Balanced hybrid with conservative MMR — lambda tests (best alpha assumed 0.85)
+    {
+        "config_name": "iter21_balanced_a085_mmr_l085",
+        "method": "hybrid",
+        "alpha": 0.85,
+        "feature_weight_profile": "balanced",
+        "destination_mode": "none",
+        "apply_mmr": True,
+        "mmr_lambda": 0.85,
+    },
+    {
+        "config_name": "iter21_balanced_a085_mmr_l090",
+        "method": "hybrid",
+        "alpha": 0.85,
+        "feature_weight_profile": "balanced",
+        "destination_mode": "none",
+        "apply_mmr": True,
+        "mmr_lambda": 0.90,
+    },
+]
+
 
 def compare_configurations(
     rec: BubbleRecommender,
@@ -299,22 +314,10 @@ def compare_configurations(
     output_csv: str | None = None,
     configs: list[dict] | None = None,
 ) -> pd.DataFrame:
-    """
-    Run batch evaluation for the four required configurations and return a
-    comparison DataFrame.
-
-    Configurations:
-      1. iteration1_baseline: equal weights, cosine, no destination, MMR off
-      2. ablation_no_danceability: no_danceability profile, cosine, MMR off
-      3. hybrid_affect_emphasis: affect_emphasis, alpha=0.7, MMR off
-      4. hybrid_affect_emphasis_mmr: affect_emphasis, alpha=0.7, MMR on (lambda=0.75)
-
-    Each row in the output DataFrame includes all configuration parameters.
-    """
+    """Run batch evaluation for configurations and return a comparison DataFrame."""
     if configs is None:
         configs = REQUIRED_CONFIGS
 
-    # Use the same seed_ids for all configurations for fair comparison
     if seed_ids is None:
         rng = np.random.RandomState(random_state)
         all_ids = rec.df["track_id"].tolist()
@@ -330,7 +333,6 @@ def compare_configurations(
             random_state=random_state,
             **cfg,
         )
-        # Don't include the large id list in the DataFrame
         row = {key: val for key, val in batch_result.items() if key != "all_recommended_ids"}
         results.append(row)
 
@@ -342,3 +344,23 @@ def compare_configurations(
         print(f"Batch results exported to {output_csv}")
 
     return df
+
+
+def compare_iteration21(
+    rec: BubbleRecommender,
+    seed_ids: list[str] | None = None,
+    n_seeds: int = 100,
+    k: int = 10,
+    random_state: int = 42,
+    output_csv: str | None = None,
+) -> pd.DataFrame:
+    """Run the Iteration 2.1 comparison configurations."""
+    return compare_configurations(
+        rec,
+        seed_ids=seed_ids,
+        n_seeds=n_seeds,
+        k=k,
+        random_state=random_state,
+        output_csv=output_csv,
+        configs=ITERATION21_CONFIGS,
+    )

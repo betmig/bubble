@@ -1,15 +1,15 @@
 """
-Bubble FastAPI application (Iteration 2).
+Bubble FastAPI application (Iteration 2.1).
 
 Endpoints
 ---------
 GET  /health                       – liveness + dataset info
-GET  /tracks/search?q=             – fuzzy track search
+GET  /tracks/search?q=             – intelligent track search (tiered + fuzzy)
 GET  /tracks/{track_id}/features   – audio features + quadrant + intimacy
 POST /recommend                    – main recommendation endpoint
 GET  /evaluate?seed_id=&k=         – offline evaluation metrics for a single seed
 POST /evaluate/batch               – batch evaluation for one configuration
-POST /evaluate/compare             – compare four required configurations
+POST /evaluate/compare             – compare required configurations
 """
 
 import logging
@@ -65,13 +65,13 @@ app = FastAPI(
     title="Bubble API",
     description=(
         "Relationship-context music discovery engine.\n\n"
-        "Iteration 2 adds configurable weighted cosine similarity, destination "
-        "mode (soft calm-positive preference), MMR reranking, and batch "
-        "evaluation.\n\n"
+        "Iteration 2.1 adds similarity-first candidate pool safeguard, balanced "
+        "hybrid preset, RapidFuzz-backed intelligent search, and dual UI mode "
+        "support.\n\n"
         "Affect labels (Q1-Q4) are heuristic candidate regions derived from "
         "Spotify valence and energy, not ground-truth emotional labels."
     ),
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -135,7 +135,6 @@ def recommend(req: RecommendRequest):
     if seed_row is None:
         raise HTTPException(404, f"Track {req.seed_track_id!r} not found")
 
-    # Validate custom weights early for clear error messages
     if req.custom_weights is not None:
         try:
             validate_weights(req.custom_weights)
@@ -154,6 +153,7 @@ def recommend(req: RecommendRequest):
             destination_weight=req.destination_weight,
             apply_mmr=req.apply_mmr,
             mmr_lambda=req.mmr_lambda,
+            candidate_pool_size=req.candidate_pool_size,
             emotional_filter=req.emotional_filter,
         )
     except ValueError as exc:
@@ -204,7 +204,7 @@ def evaluate(
     return EvaluationResponse(
         precision_at_k=metrics["precision_at_k"],
         single_list_coverage=metrics["single_list_coverage"],
-        catalogue_coverage=0.0,  # single-seed call cannot compute catalogue coverage
+        catalogue_coverage=0.0,
         intra_list_diversity=metrics["intra_list_diversity"],
         seed_track_id=seed_id,
         k=k,
@@ -230,6 +230,7 @@ def evaluate_batch_endpoint(req: BatchEvaluateRequest):
         destination_weight=req.destination_weight,
         apply_mmr=req.apply_mmr,
         mmr_lambda=req.mmr_lambda,
+        candidate_pool_size=req.candidate_pool_size,
     )
 
     return BatchEvaluateResponse(
@@ -241,6 +242,7 @@ def evaluate_batch_endpoint(req: BatchEvaluateRequest):
         destination_weight=result["destination_weight"],
         apply_mmr=result["apply_mmr"],
         mmr_lambda=result["mmr_lambda"],
+        candidate_pool_size=result.get("candidate_pool_size"),
         k=result["k"],
         n_seeds_evaluated=result["n_seeds_evaluated"],
         precision_at_k_mean=result["precision_at_k_mean"],
@@ -251,7 +253,7 @@ def evaluate_batch_endpoint(req: BatchEvaluateRequest):
     )
 
 
-# -- Batch compare (four required configurations) -------------------------------
+# -- Batch compare (required configurations) -------------------------------
 
 @app.post("/evaluate/compare", response_model=BatchCompareResponse, tags=["evaluate"])
 def evaluate_compare_endpoint(req: BatchCompareRequest):

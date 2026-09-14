@@ -13,6 +13,7 @@ class FeatureWeightProfile(str, Enum):
     equal = "equal"
     no_danceability = "no_danceability"
     affect_emphasis = "affect_emphasis"
+    balanced = "balanced"
 
 
 class DestinationMode(str, Enum):
@@ -31,6 +32,7 @@ class RecommendRequest(BaseModel):
     destination_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     apply_mmr: bool = False
     mmr_lambda: float = Field(default=0.75, ge=0.0, le=1.0)
+    candidate_pool_size: Optional[int] = Field(default=None, ge=10, le=10000)
     # Deprecated — prefer destination_mode
     emotional_filter: Optional[str] = None
 
@@ -85,6 +87,7 @@ class RecommendationMetadata(BaseModel):
     destination_weight: float
     apply_mmr: bool
     mmr_lambda: float
+    candidate_pool_size: Optional[int] = None
 
 
 class EvaluationOut(BaseModel):
@@ -105,6 +108,8 @@ class TrackSearchResult(BaseModel):
     id: str
     name: str
     artist: str
+    match_type: Optional[int] = None
+    search_score: Optional[float] = None
 
 
 class EvaluationResponse(BaseModel):
@@ -134,6 +139,7 @@ class BatchEvaluateRequest(BaseModel):
     destination_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     apply_mmr: bool = False
     mmr_lambda: float = Field(default=0.75, ge=0.0, le=1.0)
+    candidate_pool_size: Optional[int] = Field(default=None, ge=10, le=10000)
 
 
 class BatchEvaluateResponse(BaseModel):
@@ -145,6 +151,7 @@ class BatchEvaluateResponse(BaseModel):
     destination_weight: float
     apply_mmr: bool
     mmr_lambda: float
+    candidate_pool_size: Optional[int] = None
     k: int
     n_seeds_evaluated: int
     precision_at_k_mean: float
@@ -169,6 +176,7 @@ class BatchCompareRow(BaseModel):
     destination_weight: float
     apply_mmr: bool
     mmr_lambda: float
+    candidate_pool_size: Optional[int] = None
     k: int
     n_seeds_evaluated: int
     precision_at_k_mean: float

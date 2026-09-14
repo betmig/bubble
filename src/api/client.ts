@@ -12,6 +12,8 @@ export interface TrackSearchResult {
   id: string;
   name: string;
   artist: string;
+  match_type?: number;
+  search_score?: number;
 }
 
 export interface AudioFeatures {
@@ -64,6 +66,7 @@ export interface RecommendationMetadata {
   destination_weight: number;
   apply_mmr: boolean;
   mmr_lambda: number;
+  candidate_pool_size?: number | null;
 }
 
 export interface RecommendResponse {
@@ -88,7 +91,7 @@ export interface EvaluationResult {
 }
 
 export type RecommendMethod = 'cosine' | 'knn' | 'hybrid';
-export type FeatureWeightProfile = 'equal' | 'no_danceability' | 'affect_emphasis';
+export type FeatureWeightProfile = 'equal' | 'no_danceability' | 'affect_emphasis' | 'balanced';
 export type DestinationMode = 'none' | 'calm_positive';
 
 export async function searchTracks(q: string): Promise<TrackSearchResult[]> {
@@ -112,6 +115,7 @@ export async function getRecommendations(params: {
   destination_weight?: number;
   apply_mmr?: boolean;
   mmr_lambda?: number;
+  candidate_pool_size?: number | null;
   emotional_filter?: string;
 }): Promise<RecommendResponse> {
   const { data } = await api.post<RecommendResponse>('/recommend', params);

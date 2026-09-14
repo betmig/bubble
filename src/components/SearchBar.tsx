@@ -13,20 +13,27 @@ export function SearchBar({ onSelect, placeholder = 'Search for a song or artist
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState('');
+  const [hasSearched, setHasSearched] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (query.trim().length < 2) { setResults([]); setOpen(false); return; }
+    if (query.trim().length < 2) {
+      setResults([]);
+      setOpen(false);
+      setHasSearched(false);
+      return;
+    }
 
     debounceRef.current = setTimeout(async () => {
       setLoading(true);
       setError('');
+      setHasSearched(true);
       try {
         const data = await searchTracks(query);
         setResults(data);
-        setOpen(data.length > 0);
+        setOpen(true);
       } catch {
         setError('Could not reach the API. Is the backend running?');
         setOpen(false);
@@ -66,6 +73,7 @@ export function SearchBar({ onSelect, placeholder = 'Search for a song or artist
           onChange={e => setQuery(e.target.value)}
           placeholder={placeholder}
           onFocus={() => results.length > 0 && setOpen(true)}
+          aria-label="Search for tracks"
         />
       </div>
 
@@ -73,8 +81,16 @@ export function SearchBar({ onSelect, placeholder = 'Search for a song or artist
         <p className="mt-2 text-xs text-red-500 px-1">{error}</p>
       )}
 
-      {open && (
-        <ul className="absolute z-50 mt-2 w-full bg-white border border-rose-100 rounded-xl shadow-lg overflow-hidden">
+      {open && !loading && results.length === 0 && hasSearched && (
+        <div className="absolute z-50 mt-2 w-full bg-white border border-rose-100 rounded-xl shadow-lg p-4 text-center">
+          <p className="text-sm text-stone-500">
+            No matching tracks found. Try a song title, artist, or both.
+          </p>
+        </div>
+      )}
+
+      {open && results.length > 0 && (
+        <ul className="absolute z-50 mt-2 w-full bg-white border border-rose-100 rounded-xl shadow-lg overflow-hidden max-h-80 overflow-y-auto">
           {results.map(track => (
             <li key={track.id}>
               <button
