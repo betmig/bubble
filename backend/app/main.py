@@ -34,6 +34,7 @@ from .models import (
     BatchCompareRow,
     BatchEvaluateRequest,
     BatchEvaluateResponse,
+    EvaluationOut,
     EvaluationResponse,
     HealthResponse,
     RecommendRequest,
