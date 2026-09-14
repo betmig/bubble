@@ -9,13 +9,12 @@ export function AboutPage() {
           <span className="text-3xl">🫧</span>
           <div>
             <h1 className="text-2xl font-bold text-stone-800">About Bubble</h1>
-            <p className="text-stone-500 text-sm"></p>
+            <p className="text-stone-500 text-sm">CM3005 Data Science project</p>
           </div>
         </div>
 
         <Section icon={<Info size={18} className="text-rose-500" />} title="What is Bubble?">
           <p>
-            Testing.
             Bubble is a relationship-context music discovery engine. You enter a song you associate with someone
             you care about, and Bubble surfaces tracks with the same warm, tender emotional fingerprint —
             the kind of music you'd share with someone special.

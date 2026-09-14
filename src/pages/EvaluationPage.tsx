@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { searchTracks, getEvaluation, type TrackSearchResult, type EvaluationResult } from '../api/client';
+import { getEvaluation, type TrackSearchResult, type EvaluationResult } from '../api/client';
 import { SearchBar } from '../components/SearchBar';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Loader2, AlertCircle, FlaskConical } from 'lucide-react';
@@ -28,7 +28,7 @@ export function EvaluationPage() {
   const chartData = result
     ? [
         { metric: 'Precision@K', value: parseFloat((result.precision_at_k * 100).toFixed(1)) },
-        { metric: 'Coverage %', value: parseFloat((result.coverage * 100).toFixed(1)) },
+        { metric: 'Single-list coverage', value: parseFloat((result.single_list_coverage * 100).toFixed(1)) },
         { metric: 'Diversity', value: parseFloat((result.intra_list_diversity * 100).toFixed(1)) },
       ]
     : [];
@@ -96,9 +96,9 @@ export function EvaluationPage() {
                 description="Fraction of top-K sharing the seed's genre"
               />
               <MetricCard
-                label="Coverage"
-                value={`${(result.coverage * 100).toFixed(1)}%`}
-                description="Unique tracks recommended / total tracks"
+                label="Single-list coverage"
+                value={`${(result.single_list_coverage * 100).toFixed(1)}%`}
+                description="Tracks in this list / total catalogue"
               />
               <MetricCard
                 label="Diversity"
@@ -116,7 +116,7 @@ export function EvaluationPage() {
                   <YAxis tick={{ fontSize: 11 }} domain={[0, 100]} />
                   <Tooltip
                     contentStyle={{ borderRadius: 10, border: '1px solid #fecdd3', fontSize: 12 }}
-                    formatter={(v: number) => [`${v}`, '']}
+                    formatter={(v) => [`${v}`, '']}
                   />
                   <Bar dataKey="value" fill="#f43f5e" radius={[6, 6, 0, 0]} />
                 </BarChart>

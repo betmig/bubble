@@ -1,8 +1,8 @@
 export const QUADRANT_LABELS: Record<string, string> = {
-  Q1: 'Happy / Excited',
-  Q2: 'Angry / Tense',
-  Q3: 'Sad / Melancholic',
-  Q4: 'Tender / Warm',
+  Q1: 'High-arousal positive',
+  Q2: 'High-arousal negative',
+  Q3: 'Low-arousal negative',
+  Q4: 'Calm-positive region',
 };
 
 export const QUADRANT_COLORS: Record<string, string> = {

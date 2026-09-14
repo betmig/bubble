@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { SearchBar } from '../components/SearchBar';
 import type { TrackSearchResult } from '../api/client';
-import { Music2, Sparkles, Heart, Waves } from 'lucide-react';
+import { Sparkles, Heart, Waves } from 'lucide-react';
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -56,10 +56,10 @@ export function HomePage() {
           <h2 className="text-center text-lg font-semibold text-stone-700 mb-6">Russell's Emotion Circumplex</h2>
           <div className="grid grid-cols-2 gap-3 max-w-sm mx-auto text-center">
             {[
-              { q: 'Q1', label: 'Happy / Excited', color: 'bg-amber-100 border-amber-200 text-amber-800' },
-              { q: 'Q2', label: 'Angry / Tense', color: 'bg-red-100 border-red-200 text-red-800' },
-              { q: 'Q3', label: 'Sad / Melancholic', color: 'bg-indigo-100 border-indigo-200 text-indigo-800' },
-              { q: 'Q4', label: 'Tender / Warm ✦', color: 'bg-rose-100 border-rose-200 text-rose-800 ring-2 ring-rose-300' },
+              { q: 'Q1', label: 'High-arousal positive', color: 'bg-amber-100 border-amber-200 text-amber-800' },
+              { q: 'Q2', label: 'High-arousal negative', color: 'bg-red-100 border-red-200 text-red-800' },
+              { q: 'Q3', label: 'Low-arousal negative', color: 'bg-indigo-100 border-indigo-200 text-indigo-800' },
+              { q: 'Q4', label: 'Calm-positive region', color: 'bg-rose-100 border-rose-200 text-rose-800 ring-2 ring-rose-300' },
             ].map(({ q, label, color }) => (
               <div key={q} className={`p-3 rounded-xl border ${color}`}>
                 <p className="font-bold text-sm">{q}</p>
@@ -68,7 +68,7 @@ export function HomePage() {
             ))}
           </div>
           <p className="text-center text-xs text-stone-400 mt-4">
-            Bubble focuses on Q4 — the warm, calm corner — where the most tender songs live.
+            Q4 — the calm-positive destination region — is where the most tender songs tend to cluster.
           </p>
         </div>
       </section>

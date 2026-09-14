@@ -1,5 +1,5 @@
 """
-Bubble FastAPI application.
+Bubble FastAPI application (Iteration 2).
 
 Endpoints
 ---------
@@ -7,7 +7,9 @@ GET  /health                       – liveness + dataset info
 GET  /tracks/search?q=             – fuzzy track search
 GET  /tracks/{track_id}/features   – audio features + quadrant + intimacy
 POST /recommend                    – main recommendation endpoint
-GET  /evaluate?seed_id=&k=         – offline evaluation metrics
+GET  /evaluate?seed_id=&k=         – offline evaluation metrics for a single seed
+POST /evaluate/batch               – batch evaluation for one configuration
+POST /evaluate/compare             – compare four required configurations
 """
 
 import logging
@@ -17,18 +19,31 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from .evaluation import evaluate_single
+from .evaluation import (
+    evaluate_batch,
+    evaluate_single,
+    compare_configurations,
+    catalogue_coverage,
+    precision_at_k,
+    intra_list_diversity,
+)
 from .models import (
     AudioFeaturesOut,
+    BatchCompareRequest,
+    BatchCompareResponse,
+    BatchCompareRow,
+    BatchEvaluateRequest,
+    BatchEvaluateResponse,
     EvaluationResponse,
     HealthResponse,
     RecommendRequest,
     RecommendResponse,
     RecommendedTrackOut,
+    RecommendationMetadata,
     SeedTrackOut,
     TrackSearchResult,
 )
-from .recommender import DATASET_PATH, recommender
+from .recommender import DATASET_PATH, recommender, validate_weights
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,8 +62,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Bubble API",
-    description="Relationship-context music discovery engine",
-    version="1.0.0",
+    description=(
+        "Relationship-context music discovery engine.\n\n"
+        "Iteration 2 adds configurable weighted cosine similarity, destination "
+        "mode (soft calm-positive preference), MMR reranking, and batch "
+        "evaluation.\n\n"
+        "Affect labels (Q1-Q4) are heuristic candidate regions derived from "
+        "Spotify valence and energy, not ground-truth emotional labels."
+    ),
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -60,14 +82,14 @@ app.add_middleware(
 )
 
 
-# ── Health ─────────────────────────────────────────────────────────────────────
+# -- Health ---------------------------------------------------------------------
 
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 def health():
     return HealthResponse(status="ok", tracks_loaded=recommender.track_count)
 
 
-# ── Track search ───────────────────────────────────────────────────────────────
+# -- Track search --------------------------------------------------------------
 
 @app.get("/tracks/search", response_model=list[TrackSearchResult], tags=["tracks"])
 def search_tracks(q: str = Query(..., min_length=1)):
@@ -77,7 +99,7 @@ def search_tracks(q: str = Query(..., min_length=1)):
     return [TrackSearchResult(**r) for r in results]
 
 
-# ── Track features ─────────────────────────────────────────────────────────────
+# -- Track features -------------------------------------------------------------
 
 @app.get("/tracks/{track_id}/features", response_model=AudioFeaturesOut, tags=["tracks"])
 def get_track_features(track_id: str):
@@ -101,7 +123,7 @@ def get_track_features(track_id: str):
     )
 
 
-# ── Recommend ──────────────────────────────────────────────────────────────────
+# -- Recommend ------------------------------------------------------------------
 
 @app.post("/recommend", response_model=RecommendResponse, tags=["recommend"])
 def recommend(req: RecommendRequest):
@@ -112,16 +134,32 @@ def recommend(req: RecommendRequest):
     if seed_row is None:
         raise HTTPException(404, f"Track {req.seed_track_id!r} not found")
 
+    # Validate custom weights early for clear error messages
+    if req.custom_weights is not None:
+        try:
+            validate_weights(req.custom_weights)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
     try:
-        recs = recommender.recommend(
+        result = recommender.recommend(
             seed_track_id=req.seed_track_id,
             top_k=req.top_k,
             method=req.method.value,
             alpha=req.alpha,
+            feature_weight_profile=req.feature_weight_profile.value,
+            custom_weights=req.custom_weights,
+            destination_mode=req.destination_mode.value,
+            destination_weight=req.destination_weight,
+            apply_mmr=req.apply_mmr,
+            mmr_lambda=req.mmr_lambda,
             emotional_filter=req.emotional_filter,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+    recs = result["recommendations"]
+    metadata = result["metadata"]
 
     seed_features = get_track_features(req.seed_track_id)
     seed_out = SeedTrackOut(
@@ -138,11 +176,12 @@ def recommend(req: RecommendRequest):
         seed_track=seed_out,
         recommendations=[RecommendedTrackOut(**r) for r in recs],
         method_used=req.method.value,
-        evaluation=eval_metrics,
+        metadata=RecommendationMetadata(**metadata),
+        evaluation=EvaluationOut(**eval_metrics),
     )
 
 
-# ── Evaluate ───────────────────────────────────────────────────────────────────
+# -- Evaluate (single seed) -----------------------------------------------------
 
 @app.get("/evaluate", response_model=EvaluationResponse, tags=["evaluate"])
 def evaluate(
@@ -157,13 +196,73 @@ def evaluate(
         raise HTTPException(404, f"Track {seed_id!r} not found")
 
     recs = recommender.recommend(seed_track_id=seed_id, top_k=k, method="hybrid")
+    rec_list = recs["recommendations"]
     seed_genre = str(seed_row.get("genre", "unknown"))
-    metrics = evaluate_single(recs, seed_genre, k, recommender.track_count)
+    metrics = evaluate_single(rec_list, seed_genre, k, recommender.track_count)
 
     return EvaluationResponse(
         precision_at_k=metrics["precision_at_k"],
-        coverage=metrics["coverage"],
+        single_list_coverage=metrics["single_list_coverage"],
+        catalogue_coverage=0.0,  # single-seed call cannot compute catalogue coverage
         intra_list_diversity=metrics["intra_list_diversity"],
         seed_track_id=seed_id,
         k=k,
     )
+
+
+# -- Batch evaluate (single configuration) --------------------------------------
+
+@app.post("/evaluate/batch", response_model=BatchEvaluateResponse, tags=["evaluate"])
+def evaluate_batch_endpoint(req: BatchEvaluateRequest):
+    if not recommender._loaded:
+        raise HTTPException(503, "Dataset not loaded")
+
+    result = evaluate_batch(
+        recommender,
+        n_seeds=req.n_seeds,
+        k=req.k,
+        random_state=req.random_state,
+        method=req.method.value,
+        alpha=req.alpha,
+        feature_weight_profile=req.feature_weight_profile.value,
+        destination_mode=req.destination_mode.value,
+        destination_weight=req.destination_weight,
+        apply_mmr=req.apply_mmr,
+        mmr_lambda=req.mmr_lambda,
+    )
+
+    return BatchEvaluateResponse(
+        config_name=result["config_name"],
+        method=result["method"],
+        alpha=result["alpha"],
+        feature_weight_profile=result["feature_weight_profile"],
+        destination_mode=result["destination_mode"],
+        destination_weight=result["destination_weight"],
+        apply_mmr=result["apply_mmr"],
+        mmr_lambda=result["mmr_lambda"],
+        k=result["k"],
+        n_seeds_evaluated=result["n_seeds_evaluated"],
+        precision_at_k_mean=result["precision_at_k_mean"],
+        precision_at_k_std=result["precision_at_k_std"],
+        intra_list_diversity_mean=result["intra_list_diversity_mean"],
+        intra_list_diversity_std=result["intra_list_diversity_std"],
+        catalogue_coverage=result["catalogue_coverage"],
+    )
+
+
+# -- Batch compare (four required configurations) -------------------------------
+
+@app.post("/evaluate/compare", response_model=BatchCompareResponse, tags=["evaluate"])
+def evaluate_compare_endpoint(req: BatchCompareRequest):
+    if not recommender._loaded:
+        raise HTTPException(503, "Dataset not loaded")
+
+    df = compare_configurations(
+        recommender,
+        n_seeds=req.n_seeds,
+        k=req.k,
+        random_state=req.random_state,
+    )
+
+    rows = [BatchCompareRow(**row) for row in df.to_dict(orient="records")]
+    return BatchCompareResponse(results=rows)

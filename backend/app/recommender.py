@@ -1,19 +1,27 @@
 """
-Core recommendation pipeline for Bubble.
+Core recommendation pipeline for Bubble (Iteration 2).
 
 Pipeline stages:
   1. Load and validate the Spotify CSV dataset.
   2. Feature selection and MinMax normalisation.
   3. Compute custom intimacy_score per track.
-  4. Assign Russell quadrant (valence × energy plane).
-  5. Expose three recommendation methods:
-       A) Cosine similarity baseline
+  4. Assign Russell quadrant (valence x energy plane) using fixed 0.5 thresholds.
+  5. Expose recommendation methods:
+       A) Weighted cosine similarity (with configurable feature-weight profiles)
        B) KNN via scikit-learn NearestNeighbors
-       C) Hybrid (cosine + intimacy blend)
+       C) Hybrid (weighted cosine + intimacy blend)
+  6. Optional destination-mode soft scoring (calm-positive preference).
+  7. Optional MMR (Maximum Marginal Relevance) reranking for diversity.
+
+Affect labels (Q1-Q4) are heuristic categories derived from Spotify valence and
+energy.  They are a feature-engineering framework, NOT ground-truth emotional
+labels.  Valence and energy do not perfectly determine human emotional experience.
+Q4 is described as a "calm-positive destination region" / "candidate region",
+not a proven intimacy or emotion label.
 """
 
-import os
 import logging
+import os
 from typing import Optional
 
 import numpy as np
@@ -24,7 +32,7 @@ from sklearn.preprocessing import MinMaxScaler
 
 logger = logging.getLogger(__name__)
 
-# ── Constants ──────────────────────────────────────────────────────────────────
+# -- Constants -----------------------------------------------------------------
 
 FEATURE_COLS = [
     "valence",
@@ -42,8 +50,44 @@ REQUIRED_COLS = FEATURE_COLS + ["track_id", "track_name", "artist_name"]
 
 DATASET_PATH = os.getenv("DATASET_PATH", "data/spotify_tracks.csv")
 
+# -- Feature-weight profiles ---------------------------------------------------
 
-# ── Data loading & preprocessing ──────────────────────────────────────────────
+# Default: all weights 1.0 — reproduces iteration-1 unweighted cosine as baseline.
+DEFAULT_WEIGHTS: dict[str, float] = {col: 1.0 for col in FEATURE_COLS}
+
+FEATURE_WEIGHT_PROFILES: dict[str, dict[str, float]] = {
+    # Profile 1: all weights equal — iteration-1 baseline.
+    "equal": {col: 1.0 for col in FEATURE_COLS},
+    # Profile 2: danceability removed (weight 0) — tests whether danceability
+    # contributes to relationship-context relevance.
+    "no_danceability": {**{col: 1.0 for col in FEATURE_COLS}, "danceability": 0.0},
+    # Profile 3: affect emphasis — higher weights for valence and energy (the
+    # two features most tied to Russell's circumplex), moderate weights for
+    # acousticness and speechiness (instrumental/organic character), and lower
+    # weights for less theoretically justified features.
+    "affect_emphasis": {
+        "valence": 2.0,
+        "energy": 2.0,
+        "danceability": 0.5,
+        "acousticness": 1.5,
+        "instrumentalness": 0.5,
+        "speechiness": 1.5,
+        "liveness": 0.3,
+        "tempo": 0.5,
+        "loudness": 0.5,
+    },
+}
+
+VALID_PROFILES = list(FEATURE_WEIGHT_PROFILES.keys())
+
+# Destination-mode defaults
+DESTINATION_WEIGHT_DEFAULT = 0.3
+
+# MMR defaults
+MMR_LAMBDA_DEFAULT = 0.75
+
+
+# -- Data loading & preprocessing ---------------------------------------------
 
 class BubbleRecommender:
     """Holds the preprocessed dataset and exposes recommendation methods."""
@@ -54,14 +98,13 @@ class BubbleRecommender:
         self._knn: Optional[NearestNeighbors] = None
         self._loaded = False
 
-    # ── Loading ───────────────────────────────────────────────────────────────
+    # -- Loading ----------------------------------------------------------------
 
     def load(self, path: str = DATASET_PATH) -> None:
         """Load CSV, validate columns, normalise features, compute derived columns."""
         logger.info("Loading dataset from %s", path)
         raw = pd.read_csv(path)
 
-        # Normalise Kaggle column names to internal schema
         raw = raw.rename(columns={
             "artists": "artist_name",
             "track_genre": "genre",
@@ -69,7 +112,6 @@ class BubbleRecommender:
         if "track_id" not in raw.columns and "Unnamed: 0" in raw.columns:
             raw = raw.rename(columns={"Unnamed: 0": "track_id"})
 
-        # Tolerate missing optional columns but require core ones
         missing = [c for c in REQUIRED_COLS if c not in raw.columns]
         if missing:
             raise ValueError(f"Dataset missing required columns: {missing}")
@@ -79,7 +121,6 @@ class BubbleRecommender:
         df = df.drop_duplicates(subset=["track_id"])
         df = df.reset_index(drop=True)
 
-        # Fill optional columns
         if "genre" not in df.columns:
             df["genre"] = "unknown"
         if "popularity" not in df.columns:
@@ -91,8 +132,8 @@ class BubbleRecommender:
         for i, col in enumerate(FEATURE_COLS):
             df[f"{col}_norm"] = normed[:, i]
 
-        # Intimacy score: warmth proxy using normalised values
-        # Formula: valence_n × (1 − energy_n) × acousticness_n × (1 − speechiness_n)
+        # Intimacy score: warmth proxy using normalised values.
+        # This is a heuristic content feature, not a ground-truth emotional label.
         df["intimacy_score"] = (
             df["valence_norm"]
             * (1 - df["energy_norm"])
@@ -100,22 +141,31 @@ class BubbleRecommender:
             * (1 - df["speechiness_norm"])
         )
 
-        # Assign Russell quadrant
+        # Assign Russell quadrant using fixed 0.5 thresholds on normalised
+        # valence and energy.  These thresholds are consistent across the
+        # backend and the notebook.
         df["quadrant"] = df.apply(
             lambda r: assign_quadrant(r["valence_norm"], r["energy_norm"]), axis=1
         )
 
         self.df = df
         self.feature_matrix = normed
-        self._knn = None  # reset on reload
+        self._knn = None
         self._loaded = True
         logger.info("Dataset loaded: %d tracks", len(df))
+
+    def load_from_df(self, df: pd.DataFrame, feature_matrix: np.ndarray) -> None:
+        """Load from an already-preprocessed DataFrame and matrix (for tests)."""
+        self.df = df.reset_index(drop=True)
+        self.feature_matrix = np.asarray(feature_matrix, dtype=float)
+        self._knn = None
+        self._loaded = True
 
     def _ensure_loaded(self) -> None:
         if not self._loaded:
             raise RuntimeError("Recommender not loaded. Call load() first.")
 
-    # ── Public helpers ────────────────────────────────────────────────────────
+    # -- Public helpers ---------------------------------------------------------
 
     @property
     def track_count(self) -> int:
@@ -139,7 +189,7 @@ class BubbleRecommender:
             for _, row in matches.iterrows()
         ]
 
-    # ── Recommendation entry point ────────────────────────────────────────────
+    # -- Recommendation entry point ---------------------------------------------
 
     def recommend(
         self,
@@ -147,18 +197,40 @@ class BubbleRecommender:
         top_k: int = 10,
         method: str = "cosine",
         alpha: float = 0.7,
-        emotional_filter: Optional[str] = None,
-    ) -> list[dict]:
+        feature_weight_profile: str = "equal",
+        custom_weights: Optional[dict[str, float]] = None,
+        destination_mode: str = "none",
+        destination_weight: float = DESTINATION_WEIGHT_DEFAULT,
+        apply_mmr: bool = False,
+        mmr_lambda: float = MMR_LAMBDA_DEFAULT,
+        emotional_filter: Optional[str] = None,  # deprecated, kept for backward compat
+    ) -> dict:
         """
         Return top_k recommendations for seed_track_id.
 
         Parameters
         ----------
         seed_track_id : str
-        top_k         : int   – number of results to return
-        method        : str   – "cosine" | "knn" | "hybrid"
-        alpha         : float – hybrid weight (1=pure cosine, 0=pure intimacy)
-        emotional_filter : str|None – if "Q4", restrict candidates to Q4 tracks
+        top_k : int
+        method : str -- "cosine" | "knn" | "hybrid"
+        alpha : float in [0, 1] -- hybrid blend weight (1=pure cosine, 0=pure intimacy)
+        feature_weight_profile : str -- one of "equal", "no_danceability", "affect_emphasis"
+        custom_weights : dict | None -- override weights; validated against FEATURE_COLS
+        destination_mode : str -- "none" | "calm_positive"
+            "none": pure seed-based ranking.
+            "calm_positive": soft scoring bonus for high-valence, low-energy tracks.
+            Replaces the deprecated emotional_filter hard candidate restriction.
+        destination_weight : float in [0, 1] -- blend weight for destination score
+        apply_mmr : bool -- if True, rerank candidates with MMR for diversity
+        mmr_lambda : float in [0, 1] -- 1.0 = no diversity penalty
+        emotional_filter : str | None -- DEPRECATED. Hard Q-filter on candidate pool.
+            Retained for backward compatibility; prefer destination_mode.
+
+        Returns
+        -------
+        dict with keys:
+            "recommendations" : list[dict]
+            "metadata" : dict (profile, alpha, destination_mode, mmr settings, method)
         """
         self._ensure_loaded()
 
@@ -166,36 +238,66 @@ class BubbleRecommender:
         if seed_row is None:
             raise ValueError(f"Track ID not found: {seed_track_id}")
 
+        # Resolve and validate feature weights
+        weights = _resolve_weights(feature_weight_profile, custom_weights)
+
         seed_idx = self.df.index[self.df["track_id"] == seed_track_id][0]
         seed_vec = self.feature_matrix[seed_idx].reshape(1, -1)
 
-        # Candidate pool
+        # Candidate pool (optionally restricted by deprecated emotional_filter)
         candidates = self.df.copy()
-        candidate_matrix = self.feature_matrix.copy()
+        candidate_mask = np.ones(len(self.df), dtype=bool)
 
         if emotional_filter:
-            mask = candidates["quadrant"] == emotional_filter
-            candidates = candidates[mask].reset_index(drop=True)
-            candidate_matrix = self.feature_matrix[self.df["quadrant"] == emotional_filter]
+            mask = (candidates["quadrant"] == emotional_filter).values
+            candidate_mask &= mask
 
-        # Remove seed from candidates
-        no_seed = candidates["track_id"] != seed_track_id
-        candidates = candidates[no_seed].reset_index(drop=True)
-        candidate_matrix = candidate_matrix[no_seed.values if emotional_filter is None else np.array(no_seed)]
+        # Always exclude seed
+        candidate_mask &= (self.df["track_id"] != seed_track_id).values
+
+        candidates = self.df[candidate_mask].reset_index(drop=True)
+        candidate_matrix = self.feature_matrix[candidate_mask]
 
         if len(candidates) == 0:
-            return []
+            return {"recommendations": [], "metadata": _build_metadata(
+                method, alpha, feature_weight_profile, weights,
+                destination_mode, destination_weight, apply_mmr, mmr_lambda,
+            )}
 
+        # Compute primary relevance scores
         if method == "cosine":
-            scores = _cosine_scores(seed_vec, candidate_matrix)
+            scores = _weighted_cosine_scores(seed_vec, candidate_matrix, weights)
         elif method == "knn":
             scores = _knn_scores(seed_vec, candidate_matrix)
         elif method == "hybrid":
-            scores = _hybrid_scores(seed_vec, candidate_matrix, candidates["intimacy_score"].values, alpha)
+            scores = _hybrid_scores(
+                seed_vec, candidate_matrix,
+                candidates["intimacy_score"].values, alpha, weights,
+            )
         else:
             raise ValueError(f"Unknown method: {method}")
 
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        # Apply destination-mode soft bonus
+        if destination_mode == "calm_positive":
+            dest_scores = _destination_scores(
+                candidates["valence_norm"].values,
+                candidates["energy_norm"].values,
+            )
+            # Normalise destination scores to [0, 1] before blending
+            d_min, d_max = dest_scores.min(), dest_scores.max()
+            if d_max > d_min:
+                dest_norm = (dest_scores - d_min) / (d_max - d_min)
+            else:
+                dest_norm = np.zeros_like(dest_scores)
+            scores = (1.0 - destination_weight) * scores + destination_weight * dest_norm
+
+        # MMR reranking or simple top-k
+        if apply_mmr:
+            top_indices = _mmr_rerank(
+                scores, candidate_matrix, weights, top_k, mmr_lambda,
+            )
+        else:
+            top_indices = np.argsort(scores)[::-1][:top_k]
 
         results = []
         for rank, idx in enumerate(top_indices, start=1):
@@ -211,22 +313,104 @@ class BubbleRecommender:
                 "energy": float(row["energy_norm"]),
                 "danceability": float(row["danceability_norm"]),
                 "acousticness": float(row["acousticness_norm"]),
+                "instrumentalness": float(row["instrumentalness_norm"]),
+                "speechiness": float(row["speechiness_norm"]),
+                "liveness": float(row["liveness_norm"]),
+                "tempo": float(row["tempo_norm"]),
+                "loudness": float(row["loudness_norm"]),
                 "quadrant": row["quadrant"],
                 "genre": str(row.get("genre", "unknown")),
             })
-        return results
+
+        metadata = _build_metadata(
+            method, alpha, feature_weight_profile, weights,
+            destination_mode, destination_weight, apply_mmr, mmr_lambda,
+        )
+
+        return {"recommendations": results, "metadata": metadata}
 
 
-# ── Recommendation methods ────────────────────────────────────────────────────
+# -- Weight validation ---------------------------------------------------------
+
+def _resolve_weights(
+    profile: str,
+    custom_weights: Optional[dict[str, float]],
+) -> dict[str, float]:
+    """Resolve and validate feature weights from a profile or custom dict."""
+    if custom_weights is not None:
+        weights = custom_weights
+    elif profile in FEATURE_WEIGHT_PROFILES:
+        weights = FEATURE_WEIGHT_PROFILES[profile]
+    else:
+        raise ValueError(
+            f"Unknown feature_weight_profile: {profile!r}. "
+            f"Valid options: {VALID_PROFILES}"
+        )
+
+    validate_weights(weights)
+    return weights
+
+
+def validate_weights(weights: dict[str, float]) -> None:
+    """Validate a feature-weight dictionary.
+
+    Raises ValueError if:
+      - Any key is not a known feature name.
+      - Any value is not a non-negative number.
+      - All values are zero (no positive weight).
+    """
+    if not isinstance(weights, dict):
+        raise ValueError("Feature weights must be a dictionary.")
+
+    for key, val in weights.items():
+        if key not in FEATURE_COLS:
+            raise ValueError(
+                f"Unknown feature name in weights: {key!r}. "
+                f"Valid features: {FEATURE_COLS}"
+            )
+        if not isinstance(val, (int, float)) or isinstance(val, bool):
+            raise ValueError(
+                f"Weight for {key!r} must be a number, got {type(val).__name__}."
+            )
+        if val < 0:
+            raise ValueError(f"Weight for {key!r} must be non-negative, got {val}.")
+        if not np.isfinite(val):
+            raise ValueError(f"Weight for {key!r} must be finite, got {val}.")
+
+    if not any(v > 0 for v in weights.values()):
+        raise ValueError("At least one feature weight must be positive.")
+
+
+def _weight_sqrt_vector(weights: dict[str, float]) -> np.ndarray:
+    """Return sqrt(weight) for each feature in FEATURE_COLS order."""
+    return np.array([np.sqrt(weights.get(col, 0.0)) for col in FEATURE_COLS])
+
+
+# -- Recommendation methods ----------------------------------------------------
+
+def _weighted_cosine_scores(
+    seed_vec: np.ndarray,
+    matrix: np.ndarray,
+    weights: dict[str, float],
+) -> np.ndarray:
+    """Weighted cosine similarity.
+
+    Multiplies both the seed and every candidate vector by sqrt(weight) before
+    computing cosine similarity.  This preserves the intended weighted
+    dot-product geometry: features with higher weights contribute more to the
+    similarity score.
+    """
+    w = _weight_sqrt_vector(weights)
+    return cosine_similarity(seed_vec * w, matrix * w)[0]
+
 
 def _cosine_scores(seed_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
-    """Method A: plain cosine similarity."""
-    sims = cosine_similarity(seed_vec, matrix)[0]
-    return sims
+    """Unweighted cosine similarity (iteration-1 baseline)."""
+    return cosine_similarity(seed_vec, matrix)[0]
 
 
 def _knn_scores(seed_vec: np.ndarray, matrix: np.ndarray) -> np.ndarray:
-    """Method B: KNN with cosine metric; returns 1 - distance as score."""
+    """KNN with cosine metric; returns 1 - distance as score."""
     k = min(len(matrix), 51)
     nbrs = NearestNeighbors(n_neighbors=k, metric="cosine", algorithm="brute")
     nbrs.fit(matrix)
@@ -243,9 +427,13 @@ def _hybrid_scores(
     matrix: np.ndarray,
     intimacy: np.ndarray,
     alpha: float,
+    weights: Optional[dict[str, float]] = None,
 ) -> np.ndarray:
-    """Method C: alpha * cosine + (1 - alpha) * normalised intimacy."""
-    cos = cosine_similarity(seed_vec, matrix)[0]
+    """Hybrid: alpha * weighted_cosine + (1 - alpha) * normalised intimacy."""
+    if weights is not None:
+        cos = _weighted_cosine_scores(seed_vec, matrix, weights)
+    else:
+        cos = _cosine_scores(seed_vec, matrix)
 
     intimacy_min, intimacy_max = intimacy.min(), intimacy.max()
     if intimacy_max > intimacy_min:
@@ -256,18 +444,121 @@ def _hybrid_scores(
     return alpha * cos + (1.0 - alpha) * intimacy_norm
 
 
-# ── Quadrant helper ────────────────────────────────────────────────────────────
+def _destination_scores(
+    valence_norm: np.ndarray,
+    energy_norm: np.ndarray,
+) -> np.ndarray:
+    """Continuous calm-positive destination score.
+
+    Rewards high valence and low energy continuously (no hard quadrant cutoff).
+    Returns values in [0, 1]: valence * (1 - energy).
+    """
+    return valence_norm * (1.0 - energy_norm)
+
+
+# -- MMR reranking -------------------------------------------------------------
+
+def _mmr_rerank(
+    relevance_scores: np.ndarray,
+    candidate_matrix: np.ndarray,
+    weights: dict[str, float],
+    top_k: int,
+    lam: float,
+) -> list[int]:
+    """
+    Maximum Marginal Relevance reranking.
+
+    Selects items greedily:
+      MMR(c) = lambda * relevance(c) - (1 - lambda) * max_sim(c, selected)
+
+    Candidate-candidate similarity uses the same weighted feature representation
+    as the selected profile.
+
+    Returns a list of indices into the candidate array.
+    """
+    pool_size = max(50, top_k * 5)
+    pool_size = min(pool_size, len(relevance_scores))
+
+    # Pre-select a larger candidate pool by relevance
+    pool_indices = np.argsort(relevance_scores)[::-1][:pool_size]
+
+    w = _weight_sqrt_vector(weights)
+    weighted_matrix = candidate_matrix[pool_indices] * w
+
+    # Normalise relevance to [0, 1] for comparable MMR scale
+    rel = relevance_scores[pool_indices]
+    r_min, r_max = rel.min(), rel.max()
+    if r_max > r_min:
+        rel_norm = (rel - r_min) / (r_max - r_min)
+    else:
+        rel_norm = np.zeros_like(rel)
+
+    selected: list[int] = []
+    remaining = list(range(len(pool_indices)))
+
+    while len(selected) < top_k and remaining:
+        best_idx = None
+        best_score = -np.inf
+
+        for cand in remaining:
+            if not selected:
+                max_sim = 0.0
+            else:
+                sims = cosine_similarity(
+                    weighted_matrix[cand].reshape(1, -1),
+                    weighted_matrix[selected],
+                )[0]
+                max_sim = float(np.max(sims))
+
+            mmr_score = lam * rel_norm[cand] - (1.0 - lam) * max_sim
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = cand
+
+        selected.append(best_idx)
+        remaining.remove(best_idx)
+
+    return [pool_indices[i] for i in selected]
+
+
+# -- Metadata helper -----------------------------------------------------------
+
+def _build_metadata(
+    method: str,
+    alpha: float,
+    profile: str,
+    weights: dict[str, float],
+    destination_mode: str,
+    destination_weight: float,
+    apply_mmr: bool,
+    mmr_lambda: float,
+) -> dict:
+    return {
+        "method": method,
+        "alpha": alpha,
+        "feature_weight_profile": profile,
+        "feature_weights": dict(weights),
+        "destination_mode": destination_mode,
+        "destination_weight": destination_weight,
+        "apply_mmr": apply_mmr,
+        "mmr_lambda": mmr_lambda,
+    }
+
+
+# -- Quadrant helper -----------------------------------------------------------
 
 def assign_quadrant(valence: float, energy: float) -> str:
     """
     Map (valence, energy) to a Russell circumplex quadrant.
 
-    Assumes values are normalised to [0, 1] where 0.5 is the midpoint.
+    Uses fixed 0.5 thresholds on normalised values.  These thresholds are
+    consistent across the backend and the notebook.
 
-    Q1: high valence, high energy   — Happy / Excited
-    Q2: low valence,  high energy   — Angry / Tense
-    Q3: low valence,  low energy    — Sad / Melancholic
-    Q4: high valence, low energy    — Tender / Warm / Intimate
+    Quadrants are heuristic candidate regions, not proven emotional labels:
+      Q1: high valence, high energy  -- high-arousal positive region
+      Q2: low valence,  high energy  -- high-arousal negative region
+      Q3: low valence,  low energy   -- low-arousal negative region
+      Q4: high valence, low energy   -- calm-positive destination region
     """
     high_v = valence >= 0.5
     high_e = energy >= 0.5
@@ -281,6 +572,6 @@ def assign_quadrant(valence: float, energy: float) -> str:
     return "Q4"
 
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+# -- Singleton -----------------------------------------------------------------
 
 recommender = BubbleRecommender()
