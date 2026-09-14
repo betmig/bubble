@@ -15,6 +15,7 @@ export function AboutPage() {
 
         <Section icon={<Info size={18} className="text-rose-500" />} title="What is Bubble?">
           <p>
+            Testing.
             Bubble is a relationship-context music discovery engine. You enter a song you associate with someone
             you care about, and Bubble surfaces tracks with the same warm, tender emotional fingerprint —
             the kind of music you'd share with someone special.
