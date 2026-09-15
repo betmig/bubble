@@ -38,10 +38,10 @@ export function EvaluationPage() {
       <div className="max-w-3xl mx-auto px-4 sm:px-6">
         <div className="flex items-center gap-2 mb-1">
           <FlaskConical size={20} className="text-rose-500" />
-          <h1 className="text-2xl font-bold text-stone-800">Evaluation</h1>
+          <h1 className="text-2xl font-bold text-stone-800">Single-seed diagnostic</h1>
         </div>
         <p className="text-stone-500 text-sm mb-8">
-          Measure recommendation quality for a given seed track.
+          Inspect proxy metrics for one seed. Use batch evaluation results in the notebook for formal model comparison.
         </p>
 
         <div className="bg-white rounded-2xl border border-rose-100 p-6 shadow-sm space-y-5 mb-6">
@@ -77,7 +77,7 @@ export function EvaluationPage() {
             disabled={!seed || loading}
             className="w-full py-2.5 bg-rose-500 hover:bg-rose-600 text-white text-sm font-semibold rounded-xl transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
           >
-            {loading ? <><Loader2 size={15} className="animate-spin" /> Evaluating…</> : 'Run evaluation'}
+            {loading ? <><Loader2 size={15} className="animate-spin" /> Inspecting…</> : 'Inspect this seed'}
           </button>
         </div>
 
@@ -122,6 +122,9 @@ export function EvaluationPage() {
                 </BarChart>
               </ResponsiveContainer>
               <p className="text-xs text-stone-400 text-center mt-1">Values normalised to percentage scale for display</p>
+              <p className="text-xs text-stone-400 text-center mt-3">
+                Precision@K is based on genre matching and is only a proxy for relevance. One seed does not represent overall model performance.
+              </p>
             </div>
           </div>
         )}

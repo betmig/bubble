@@ -2,15 +2,21 @@ import { Link, useLocation } from 'react-router-dom';
 import { Music2, FlaskConical, Ear } from 'lucide-react';
 import { useRecommendation } from '../context/RecommendationContext';
 
-const NAV = [
+const DS_NAV = [
   { to: '/', label: 'Discover' },
-  { to: '/evaluation', label: 'Evaluate' },
+  { to: '/evaluation', label: 'Diagnostics' },
+  { to: '/about', label: 'About' },
+];
+
+const LISTENER_NAV = [
+  { to: '/', label: 'Discover' },
   { to: '/about', label: 'About' },
 ];
 
 export function Navbar() {
   const { pathname } = useLocation();
   const { mode, setMode } = useRecommendation();
+  const nav = mode === 'listener' ? LISTENER_NAV : DS_NAV;
 
   return (
     <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b border-rose-100">
@@ -55,7 +61,7 @@ export function Navbar() {
         </div>
 
         <nav className="flex items-center gap-1 ml-auto">
-          {NAV.map(({ to, label }) => (
+          {nav.map(({ to, label }) => (
             <Link
               key={to}
               to={to}
