@@ -24,14 +24,14 @@ class DestinationMode(str, Enum):
 class RecommendRequest(BaseModel):
     seed_track_id: str
     top_k: int = Field(default=10, ge=1, le=50)
-    method: RecommendMethod = RecommendMethod.cosine
-    alpha: float = Field(default=0.7, ge=0.0, le=1.0)
-    feature_weight_profile: FeatureWeightProfile = FeatureWeightProfile.equal
+    method: RecommendMethod = RecommendMethod.hybrid
+    alpha: float = Field(default=0.90, ge=0.0, le=1.0)
+    feature_weight_profile: FeatureWeightProfile = FeatureWeightProfile.balanced
     custom_weights: Optional[dict[str, float]] = None
     destination_mode: DestinationMode = DestinationMode.none
     destination_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     apply_mmr: bool = False
-    mmr_lambda: float = Field(default=0.75, ge=0.0, le=1.0)
+    mmr_lambda: float = Field(default=0.90, ge=0.0, le=1.0)
     candidate_pool_size: Optional[int] = Field(default=None, ge=10, le=10000)
     # Deprecated — prefer destination_mode
     emotional_filter: Optional[str] = None
@@ -132,13 +132,13 @@ class BatchEvaluateRequest(BaseModel):
     n_seeds: int = Field(default=100, ge=1, le=10000)
     k: int = Field(default=10, ge=1, le=50)
     random_state: int = Field(default=42)
-    method: RecommendMethod = RecommendMethod.cosine
-    alpha: float = Field(default=0.7, ge=0.0, le=1.0)
-    feature_weight_profile: FeatureWeightProfile = FeatureWeightProfile.equal
+    method: RecommendMethod = RecommendMethod.hybrid
+    alpha: float = Field(default=0.90, ge=0.0, le=1.0)
+    feature_weight_profile: FeatureWeightProfile = FeatureWeightProfile.balanced
     destination_mode: DestinationMode = DestinationMode.none
     destination_weight: float = Field(default=0.3, ge=0.0, le=1.0)
     apply_mmr: bool = False
-    mmr_lambda: float = Field(default=0.75, ge=0.0, le=1.0)
+    mmr_lambda: float = Field(default=0.90, ge=0.0, le=1.0)
     candidate_pool_size: Optional[int] = Field(default=None, ge=10, le=10000)
 
 

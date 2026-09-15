@@ -36,12 +36,12 @@ export function ResultsPage() {
 
   // Data Science mode controls
   const [method, setMethod] = useState<RecommendMethod>('hybrid');
-  const [alpha, setAlpha] = useState(0.7);
+  const [alpha, setAlpha] = useState(0.90);
   const [topK, setTopK] = useState(10);
-  const [profile, setProfile] = useState<FeatureWeightProfile>('affect_emphasis');
+  const [profile, setProfile] = useState<FeatureWeightProfile>('balanced');
   const [destinationMode, setDestinationMode] = useState<DestinationMode>('none');
   const [applyMmr, setApplyMmr] = useState(false);
-  const [mmrLambda, setMmrLambda] = useState(0.75);
+  const [mmrLambda, setMmrLambda] = useState(0.90);
 
   const [tab, setTab] = useState<'cards' | 'map'>('cards');
   const requestRef = useRef(0);
@@ -308,7 +308,7 @@ export function ResultsPage() {
                           : 'bg-stone-100 text-stone-600 hover:bg-stone-200'
                       }`}
                     >
-                      {m === 'cosine' ? 'Cosine' : m === 'knn' ? 'KNN' : 'Hybrid'}
+                      {m === 'cosine' ? 'Cosine baseline (iteration 1)' : m === 'knn' ? 'KNN' : 'Hybrid'}
                     </button>
                   ))}
                 </div>

@@ -40,14 +40,14 @@ This iteration responds to formative feedback from a very small exploratory stud
 
 ### C. Dual Interface Modes
 
-- **Data Science mode** (default): The existing advanced interface with all controls — method choice, alpha, feature-weight profiles (now including `balanced`), destination mode, MMR controls, evaluation metrics, emotion map, and technical metadata.
+- **Data Science mode** (default): The existing advanced interface with all controls — method choice, alpha, feature-weight profiles (now including `balanced`), destination mode, MMR controls, evaluation metrics, emotion map, and technical metadata. The default preset is balanced hybrid alpha-0.90. Raw cosine is available as "Cosine baseline (iteration 1)" for reproducibility but is no longer the main user-facing default.
 - **Listener mode**: A simple, friendly interface for users with no data-science background:
   - Search for a song, artist, or both
   - Select one seed song
   - Choose one preference:
-    - "Stay close to this song" → cosine, equal weights, no MMR, no destination
-    - "A little more variety" → balanced hybrid, alpha=0.85, MMR on (lambda=0.90), no destination
-    - "Calm and warm suggestions" → balanced hybrid, alpha=0.85, destination calm_positive, no MMR
+    - "Stay close to this song" → balanced hybrid, alpha=0.90, no MMR, no destination
+    - "A little more variety" → balanced hybrid, alpha=0.85, no MMR, no destination
+    - "Calm and warm suggestions" → balanced hybrid, alpha=0.90, destination calm_positive, no MMR
   - Click "Find songs for me"
   - Results show title, artist, rank, and a friendly label derived from the chosen preference
   - No technical metrics, alpha values, or mathematical terminology displayed
@@ -75,13 +75,45 @@ The `ITERATION21_CONFIGS` list in `evaluation.py` includes:
 | iter21_balanced_a085_mmr_l085 | hybrid | 0.85 | balanced | on | 0.85 | default |
 | iter21_balanced_a085_mmr_l090 | hybrid | 0.85 | balanced | on | 0.90 | default |
 
-## Selected Default Configuration
+## Selected Default Configuration (100-Seed Evaluation)
 
-- **Default method**: `cosine` (similarity-first, iteration-1 reproducible)
+### Evaluation Results
+
+A 100-seed batch evaluation (random_state=42, k=10) was run across all Iteration 2.1 configurations. Key results:
+
+| Config | Method | Alpha | Profile | MMR | Precision@10 | Intra-list Diversity |
+|--------|--------|-------|---------|-----|-------------|---------------------|
+| iter21_baseline | cosine | 0.70 | equal | off | 0.147 | 0.00461 |
+| iter21_balanced_a090_no_mmr | hybrid | 0.90 | balanced | off | 0.120 | 0.00549 |
+| iter21_balanced_a085_no_mmr | hybrid | 0.85 | balanced | off | 0.120 | 0.00549 |
+| iter21_balanced_a085_mmr_l085 | hybrid | 0.85 | balanced | on (λ=0.85) | 0.120 | 0.00549 |
+| iter21_balanced_a085_mmr_l090 | hybrid | 0.85 | balanced | on (λ=0.90) | 0.120 | 0.00549 |
+
+### Selection Rationale
+
+Balanced alpha-0.90 was selected because it retained Precision@10 of 0.120, close to the cosine baseline's 0.147, while modestly increasing intra-list diversity from 0.00461 to 0.00549.
+
+**Precision@10 is a genre-match proxy, not ground-truth relevance.** This selection responds to formative feedback plus offline evaluation. It does not claim statistical significance, ground-truth relevance, or proven user preference.
+
+The evaluated MMR variants (lambda 0.85 and 0.90) did not show a meaningful aggregate diversity improvement, so MMR is off by default.
+
+### Default Configuration
+
+- **Default method**: `hybrid` (balanced hybrid — no longer raw cosine)
+- **Default alpha**: `0.90`
+- **Default feature_weight_profile**: `balanced`
 - **Default destination_mode**: `none`
-- **Default MMR**: off
-- **Default feature_weight_profile**: `equal`
-- **Rationale**: The default preserves iteration-1 baseline reproducibility. The `balanced` profile is available as an option for users who want cross-genre discovery with controlled drift. The candidate pool safeguard ensures hybrid scoring and MMR operate within a similarity-first candidate set, addressing the "too distant" feedback without removing advanced controls.
+- **Default destination_weight**: `0.30`
+- **Default MMR**: off (`apply_mmr=false`)
+- **Default mmr_lambda**: `0.90` (metadata only; unused when MMR is false)
+- **Default candidate_pool_size**: `max(100, top_k * 10)`
+- **Cosine baseline**: Available in Data Science mode as "Cosine baseline (iteration 1)" for reproducibility, but not the user-facing default.
+
+### Listener Mode Presets
+
+- **Stay close to this song**: balanced hybrid, alpha=0.90, no MMR, no destination
+- **A little more variety**: balanced hybrid, alpha=0.85, no MMR (MMR variants did not show meaningful aggregate diversity improvement at lambda 0.85 or 0.90)
+- **Calm and warm suggestions**: balanced hybrid, alpha=0.90, destination calm_positive, destination_weight=0.30, no MMR
 
 ## Known Limitations
 

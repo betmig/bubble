@@ -196,7 +196,10 @@ def evaluate(
     if seed_row is None:
         raise HTTPException(404, f"Track {seed_id!r} not found")
 
-    recs = recommender.recommend(seed_track_id=seed_id, top_k=k, method="hybrid")
+    recs = recommender.recommend(
+        seed_track_id=seed_id, top_k=k, method="hybrid",
+        alpha=0.90, feature_weight_profile="balanced",
+    )
     rec_list = recs["recommendations"]
     seed_genre = str(seed_row.get("genre", "unknown"))
     metrics = evaluate_single(rec_list, seed_genre, k, recommender.track_count)

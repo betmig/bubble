@@ -5,7 +5,9 @@
 
 Bubble is a **CM3005 Data Science** project. Enter a song you associate with someone you care about and Bubble recommends tracks with a similar emotional fingerprint — anchored in Russell's valence-arousal model.
 
-**Iteration 2.1** adds similarity-first relevance tuning, a balanced hybrid preset, RapidFuzz-backed intelligent search, and dual UI modes (Data Science + Listener), responding to formative feedback from a small exploratory study.
+**Iteration 2.1** adds similarity-first relevance tuning, a balanced hybrid preset selected via 100-seed offline evaluation, RapidFuzz-backed intelligent search, and dual UI modes (Data Science + Listener), responding to formative feedback from a small exploratory study.
+
+**Default preset (evidence-based):** Balanced alpha-0.90 was selected because it retained Precision@10 of 0.120, close to the cosine baseline's 0.147, while modestly increasing intra-list diversity from 0.00461 to 0.00549. Precision@10 is a genre-match proxy, not ground-truth relevance. This selection responds to formative feedback plus offline evaluation; it does not claim statistical significance or proven user preference.
 
 ---
 
@@ -118,9 +120,9 @@ A simple, friendly interface for users with no data-science background:
 1. Search for a song by title, artist, or both
 2. Select one seed song
 3. Choose a preference:
-   - **Stay close to this song** — finds tracks that sound very similar (cosine, equal weights, no MMR)
-   - **A little more variety** — some new discoveries while staying related (balanced hybrid, alpha=0.85, MMR on with lambda=0.90)
-   - **Calm and warm suggestions** — gentle, warm tracks with a tender feel (balanced hybrid, alpha=0.85, calm-positive destination mode)
+   - **Stay close to this song** — finds tracks that sound very similar (balanced hybrid, alpha=0.90, no MMR)
+   - **A little more variety** — some new discoveries while staying related (balanced hybrid, alpha=0.85, MMR off)
+   - **Calm and warm suggestions** — gentle, warm tracks with a tender feel (balanced hybrid, alpha=0.90, calm-positive destination mode)
 4. Click "Find songs for me"
 
 No technical parameters, metrics, or mathematical terminology are shown in Listener mode. The exact backend configuration is stored internally and included in response metadata for reproducibility.
@@ -260,14 +262,14 @@ Full interactive docs at `http://localhost:8000/docs`.
 |---|---|---|---|
 | `seed_track_id` | string | required | Seed track ID |
 | `top_k` | int | 10 | Number of results (1-50) |
-| `method` | string | "cosine" | "cosine", "knn", or "hybrid" |
-| `alpha` | float | 0.7 | Hybrid blend weight [0, 1] |
-| `feature_weight_profile` | string | "equal" | "equal", "no_danceability", "affect_emphasis", or "balanced" |
+| `method` | string | "hybrid" | "cosine", "knn", or "hybrid" |
+| `alpha` | float | 0.90 | Hybrid blend weight [0, 1] |
+| `feature_weight_profile` | string | "balanced" | "equal", "no_danceability", "affect_emphasis", or "balanced" |
 | `custom_weights` | dict | null | Override weights (validated) |
 | `destination_mode` | string | "none" | "none" or "calm_positive" |
 | `destination_weight` | float | 0.3 | Destination blend weight [0, 1] |
 | `apply_mmr` | bool | false | Enable MMR diversity reranking |
-| `mmr_lambda` | float | 0.75 | MMR relevance/diversity trade-off [0, 1] |
+| `mmr_lambda` | float | 0.90 | MMR relevance/diversity trade-off [0, 1] |
 | `candidate_pool_size` | int | null | Similarity-first pool size (default: max(100, top_k*10)) |
 | `emotional_filter` | string | null | **Deprecated** — use destination_mode |
 
@@ -278,4 +280,4 @@ Full interactive docs at `http://localhost:8000/docs`.
 - See `CHANGELOG_ITERATION2.md` for Iteration 2 details.
 - See `CHANGELOG_ITERATION2_1.md` for Iteration 2.1 details.
 
-Iteration 2.1 responds to formative feedback from a small exploratory study. It does not claim statistical significance or that user satisfaction has been proven.
+Iteration 2.1 responds to formative feedback from a small exploratory study. It does not claim statistical significance or that user satisfaction has been proven. The default balanced alpha-0.90 preset was selected based on a 100-seed offline evaluation. Raw cosine remains available in Data Science mode as "Cosine baseline (iteration 1)" for reproducibility, but is no longer the user-facing default.

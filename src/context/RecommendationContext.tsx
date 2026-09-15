@@ -158,12 +158,12 @@ export function getListenerPreset(preference: ListenerPreference) {
   switch (preference) {
     case 'close':
       return {
-        method: 'cosine' as const,
-        alpha: 0.7,
-        feature_weight_profile: 'equal' as const,
+        method: 'hybrid' as const,
+        alpha: 0.90,
+        feature_weight_profile: 'balanced' as const,
         destination_mode: 'none' as const,
         apply_mmr: false,
-        mmr_lambda: 0.75,
+        mmr_lambda: 0.90,
       };
     case 'variety':
       return {
@@ -171,18 +171,18 @@ export function getListenerPreset(preference: ListenerPreference) {
         alpha: 0.85,
         feature_weight_profile: 'balanced' as const,
         destination_mode: 'none' as const,
-        apply_mmr: true,
+        apply_mmr: false,
         mmr_lambda: 0.90,
       };
     case 'calm':
       return {
         method: 'hybrid' as const,
-        alpha: 0.85,
+        alpha: 0.90,
         feature_weight_profile: 'balanced' as const,
         destination_mode: 'calm_positive' as const,
         destination_weight: 0.3,
         apply_mmr: false,
-        mmr_lambda: 0.75,
+        mmr_lambda: 0.90,
       };
   }
 }
