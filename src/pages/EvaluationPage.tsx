@@ -123,7 +123,7 @@ export function EvaluationPage() {
               </ResponsiveContainer>
               <p className="text-xs text-stone-400 text-center mt-1">Values normalised to percentage scale for display</p>
               <p className="text-xs text-stone-400 text-center mt-3">
-                Precision@K is based on genre matching and is only a proxy for relevance. One seed does not represent overall model performance.
+                Precision@K uses genre matching and is only a proxy for relevance. One seed does not represent overall model performance.
               </p>
             </div>
           </div>

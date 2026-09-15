@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   getRecommendations,
   getTrackFeatures,
@@ -16,7 +16,9 @@ import {
 import { FeatureRadar } from '../components/FeatureRadar';
 import { EmotionMap } from '../components/EmotionMap';
 import { TrackCard } from '../components/TrackCard';
+import { ShareButton } from '../components/ShareButton';
 import { QUADRANT_BG, QUADRANT_LABELS } from '../lib/constants';
+import { buildShareUrl, parseShareParams, type ShareParams } from '../lib/share';
 import {
   Loader2, AlertCircle, LayoutGrid, MapPin, ArrowLeft,
   SlidersHorizontal, RotateCcw, Sparkles, Moon, Wind,
@@ -25,14 +27,20 @@ import {
 const TOP_K_OPTIONS = [5, 10, 20];
 const PROFILES: FeatureWeightProfile[] = ['equal', 'no_danceability', 'affect_emphasis', 'balanced'];
 
+const SEED_UNAVAILABLE_MSG = 'This shared song is no longer available in the current catalogue.';
+const VERSION_MISMATCH_MSG = 'This link was created with an earlier version of Bubble, so results may differ slightly.';
+
 export function ResultsPage() {
   const { trackId } = useParams<{ trackId: string }>();
   const navigate = useNavigate();
-  const { mode, session, setSeedTrack, setResult, setListenerPreference, setLoading, setError } = useRecommendation();
+  const [searchParams] = useSearchParams();
+  const { mode, setMode, session, setSeedTrack, setResult, setListenerPreference, setLoading, setError } = useRecommendation();
 
   const [features, setFeatures] = useState<AudioFeatures | null>(null);
   const [featuresLoading, setFeaturesLoading] = useState(true);
   const [featuresError, setFeaturesError] = useState('');
+  const [versionMismatch, setVersionMismatch] = useState(false);
+  const [shareError, setShareError] = useState('');
 
   // Data Science mode controls
   const [method, setMethod] = useState<RecommendMethod>('hybrid');
@@ -45,6 +53,7 @@ export function ResultsPage() {
 
   const [tab, setTab] = useState<'cards' | 'map'>('cards');
   const requestRef = useRef(0);
+  const sharedLoadedRef = useRef(false);
 
   // Sync seed track from URL
   useEffect(() => {
@@ -55,13 +64,131 @@ export function ResultsPage() {
       .then(f => {
         setFeatures(f);
         if (session.seedTrack?.id !== trackId) {
-          // Try to restore from session, otherwise create a minimal stub
           setSeedTrack(session.seedTrack ?? { id: trackId, name: '', artist: '' });
         }
       })
-      .catch(() => setFeaturesError('Failed to load track features. Is the backend running?'))
+      .catch(() => setFeaturesError(SEED_UNAVAILABLE_MSG))
       .finally(() => setFeaturesLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackId]);
+
+  // Load shared link once on initial entry
+  useEffect(() => {
+    if (sharedLoadedRef.current) return;
+    const hasShareParams = searchParams.has('seed') && searchParams.has('method');
+    if (!hasShareParams) return;
+
+    sharedLoadedRef.current = true;
+    const parsed = parseShareParams(searchParams);
+    if (!parsed.valid) {
+      setShareError(parsed.error);
+      return;
+    }
+
+    const { params, versionMismatch: vm } = parsed.data;
+    if (vm) setVersionMismatch(true);
+
+    // Set UI mode from view param
+    setMode(params.view === 'listener' ? 'listener' : 'data-science');
+
+    // Set DS controls from shared params
+    setMethod(params.method as RecommendMethod);
+    setProfile(params.profile as FeatureWeightProfile);
+    setAlpha(params.alpha);
+    setDestinationMode(params.destinationMode as DestinationMode);
+    setApplyMmr(params.mmr);
+    setMmrLambda(params.mmrLambda);
+    setTopK(params.k);
+
+    // If preset is present, set listener preference
+    if (params.preset) {
+      const prefMap: Record<string, ListenerPreference> = {
+        close: 'close',
+        variety: 'variety',
+        calm_warm: 'calm',
+      };
+      if (prefMap[params.preset]) {
+        setListenerPreference(prefMap[params.preset]);
+      }
+    }
+
+    // Make exactly one recommendation API request
+    const reqId = ++requestRef.current;
+    setLoading(true);
+    setError('');
+    setShareError('');
+    getRecommendations({
+      seed_track_id: params.seed,
+      top_k: params.k,
+      method: params.method as RecommendMethod,
+      alpha: params.alpha,
+      feature_weight_profile: params.profile as FeatureWeightProfile,
+      destination_mode: params.destinationMode as DestinationMode,
+      destination_weight: params.destinationWeight,
+      apply_mmr: params.mmr,
+      mmr_lambda: params.mmrLambda,
+      candidate_pool_size: params.candidatePoolSize,
+    })
+      .then(data => {
+        if (reqId === requestRef.current) {
+          setResult(data);
+          setSeedTrack(data.seed_track);
+          setFeatures(data.seed_track.features);
+          setFeaturesLoading(false);
+          setTab('cards');
+        }
+      })
+      .catch(() => {
+        if (reqId === requestRef.current) {
+          setError('Failed to get recommendations. Is the backend running?');
+        }
+      })
+      .finally(() => {
+        if (reqId === requestRef.current) setLoading(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  // Build share URL from actual session data
+  function buildCurrentShareUrl(): string {
+    const isListener = mode === 'listener';
+    let preset: string | null = null;
+    if (isListener && session.listenerPreference) {
+      preset =
+        session.listenerPreference === 'close' ? 'close' :
+        session.listenerPreference === 'variety' ? 'variety' :
+        session.listenerPreference === 'calm' ? 'calm_warm' : null;
+    }
+
+    const meta = session.result?.metadata;
+    const usedMethod = (meta?.method as string) ?? method;
+    const usedProfile = (meta?.feature_weight_profile as string) ?? profile;
+    const usedAlpha = meta?.alpha ?? alpha;
+    const usedDestMode = (meta?.destination_mode as string) ?? destinationMode;
+    const usedDestWeight = meta?.destination_weight ?? 0.30;
+    const usedMmr = meta?.apply_mmr ?? applyMmr;
+    const usedMmrLambda = meta?.mmr_lambda ?? mmrLambda;
+    const usedPool = meta?.candidate_pool_size ?? null;
+    const usedK = session.result?.recommendations.length ?? topK;
+    const seedId = trackId ?? session.seedTrack?.id ?? '';
+
+    const params: ShareParams = {
+      seed: seedId,
+      preset,
+      method: usedMethod,
+      profile: usedProfile,
+      alpha: usedAlpha,
+      destinationMode: usedDestMode,
+      destinationWeight: usedDestWeight,
+      mmr: usedMmr,
+      mmrLambda: usedMmrLambda,
+      candidatePoolSize: usedPool,
+      k: usedK,
+      view: isListener ? 'listener' : 'data_science',
+      v: '2.2.0',
+    };
+    return buildShareUrl(params);
+  }
 
   async function handleGetRecommendationsDS() {
     if (!trackId) return;
@@ -152,6 +279,20 @@ export function ResultsPage() {
             <ArrowLeft size={15} /> Try another song
           </button>
 
+          {/* Version mismatch note */}
+          {versionMismatch && (
+            <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800">
+              <AlertCircle size={14} /> {VERSION_MISMATCH_MSG}
+            </div>
+          )}
+
+          {/* Share link error */}
+          {shareError && (
+            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-sm text-red-700">
+              <AlertCircle size={16} /> {shareError}
+            </div>
+          )}
+
           {/* Seed song display */}
           {features && (
             <div className="bg-white rounded-2xl border border-rose-100 p-6 shadow-sm mb-6 text-center">
@@ -214,12 +355,15 @@ export function ResultsPage() {
                 <p className="text-sm font-semibold text-stone-700">
                   {session.result.recommendations.length} recommendations
                 </p>
-                <button
-                  onClick={handleTryAnother}
-                  className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-medium"
-                >
-                  <RotateCcw size={12} /> Try another song
-                </button>
+                <div className="flex items-center gap-4">
+                  <ShareButton buildUrl={buildCurrentShareUrl} label="Share this discovery" />
+                  <button
+                    onClick={handleTryAnother}
+                    className="flex items-center gap-1.5 text-xs text-rose-600 hover:text-rose-700 font-medium"
+                  >
+                    <RotateCcw size={12} /> Try another song
+                  </button>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -252,6 +396,18 @@ export function ResultsPage() {
         >
           <ArrowLeft size={15} /> Back to search
         </button>
+
+        {versionMismatch && (
+          <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl p-3 mb-4 text-xs text-amber-800">
+            <AlertCircle size={14} /> {VERSION_MISMATCH_MSG}
+          </div>
+        )}
+
+        {shareError && (
+          <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-sm text-red-700">
+            <AlertCircle size={16} /> {shareError}
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-6">
 
@@ -451,22 +607,28 @@ export function ResultsPage() {
 
             {session.result && (
               <>
-                {/* Eval strip */}
-                <div className="flex flex-wrap gap-3 mb-4">
-                  <StatPill label="Method" value={session.result.method_used} />
-                  <StatPill label="Profile" value={session.result.metadata.feature_weight_profile} />
-                  <StatPill label="Precision@K" value={`${(session.result.evaluation.precision_at_k * 100).toFixed(0)}%`} />
-                  <StatPill label="Diversity" value={session.result.evaluation.intra_list_diversity.toFixed(3)} />
-                  <StatPill label="Tracks" value={`${session.result.recommendations.length}`} />
-                  {session.result.metadata.apply_mmr && (
-                    <StatPill label="MMR" value={`lambda=${session.result.metadata.mmr_lambda}`} />
-                  )}
-                  {session.result.metadata.destination_mode !== 'none' && (
-                    <StatPill label="Destination" value={session.result.metadata.destination_mode} />
-                  )}
-                  {session.result.metadata.candidate_pool_size != null && (
-                    <StatPill label="Pool" value={`${session.result.metadata.candidate_pool_size}`} />
-                  )}
+                {/* Share + Eval strip */}
+                <div className="flex flex-wrap items-center gap-3 mb-4">
+                  <div className="flex flex-wrap gap-3 flex-1">
+                    <StatPill label="Method" value={session.result.method_used} />
+                    <StatPill label="Profile" value={session.result.metadata.feature_weight_profile} />
+                    <StatPill label="Alpha" value={session.result.metadata.alpha.toFixed(2)} />
+                    <StatPill label="Precision@K" value={`${(session.result.evaluation.precision_at_k * 100).toFixed(0)}%`} />
+                    <StatPill label="Diversity" value={session.result.evaluation.intra_list_diversity.toFixed(3)} />
+                    <StatPill label="Tracks" value={`${session.result.recommendations.length}`} />
+                    {session.result.metadata.apply_mmr && (
+                      <StatPill label="MMR" value={`λ=${session.result.metadata.mmr_lambda}`} />
+                    )}
+                    {session.result.metadata.destination_mode !== 'none' && (
+                      <StatPill label="Destination" value={session.result.metadata.destination_mode} />
+                    )}
+                    {session.result.metadata.candidate_pool_size != null && (
+                      <StatPill label="Pool" value={`${session.result.metadata.candidate_pool_size}`} />
+                    )}
+                    <StatPill label="Top K" value={`${topK}`} />
+                    <StatPill label="Version" value="2.2.0" />
+                  </div>
+                  <ShareButton buildUrl={buildCurrentShareUrl} label="Share reproducible result" />
                 </div>
 
                 {/* Tab switcher */}

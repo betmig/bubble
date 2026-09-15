@@ -109,9 +109,10 @@ The full advanced interface for exploring recommendation algorithms:
 - Feature-weight profiles (equal, no_danceability, affect_emphasis, balanced)
 - Destination mode (none, calm-positive)
 - MMR diversity reranking with lambda control
-- Evaluation metrics (Precision@K, intra-list diversity, coverage)
+- Single-seed diagnostic page (Precision@K, intra-list diversity, coverage) — Data Science mode only
 - Emotion map (Russell's valence-arousal plane)
 - Candidate pool size in metadata
+- Shareable reproducible result links
 
 ### Listener mode
 
@@ -125,7 +126,7 @@ A simple, friendly interface for users with no data-science background:
    - **Calm and warm suggestions** — gentle, warm tracks with a tender feel (balanced hybrid, alpha=0.90, calm-positive destination mode)
 4. Click "Find songs for me"
 
-No technical parameters, metrics, or mathematical terminology are shown in Listener mode. The exact backend configuration is stored internally and included in response metadata for reproducibility.
+No technical parameters, metrics, or mathematical terminology are shown in Listener mode. The exact backend configuration is stored internally and included in response metadata for reproducibility. The single-seed diagnostic page is hidden entirely in Listener mode.
 
 ### Preserving results across mode switches
 
@@ -275,9 +276,49 @@ Full interactive docs at `http://localhost:8000/docs`.
 
 ---
 
+## Single-seed diagnostic (Data Science only)
+
+The Evaluation page — renamed "Single-seed diagnostic" — is available exclusively in Data Science mode. It is hidden entirely in Listener mode (no nav item, no page entry point).
+
+The page inspects proxy metrics (Precision@K, single-list coverage, intra-list diversity) for one seed track. Precision@K uses genre matching and is only a proxy for relevance; one seed does not represent overall model performance.
+
+**Formal evaluation** is performed through reproducible multi-seed batch experiments in the notebook (`backend/notebooks/01_eda_and_model.ipynb`), not through the single-seed diagnostic page. The backend `/evaluate` endpoint is retained for technical demonstration.
+
+---
+
+## Shareable recommendation links
+
+Bubble supports shareable recommendation links that reproduce a result using the same seed and model settings.
+
+### How it works
+
+- After recommendations load, a **Share** button appears ("Share this discovery" in Listener mode, "Share reproducible result" in Data Science mode).
+- The share link encodes the seed track ID, model settings (method, profile, alpha, destination mode/weight, MMR status/lambda, candidate pool, top-K), UI view mode, and app version into URL query parameters.
+- Opening the link validates all parameters, makes exactly one recommendation API request, and displays the results.
+- The recipient can switch between Listener and Data Science modes after the link loads — results and settings are retained, no additional API request is made.
+- If the link was created with an earlier version of Bubble, a non-blocking note appears: results may differ slightly.
+
+### What is and isn't in the link
+
+**Included:** seed track ID, model settings, view mode, version.
+
+**Not included:** recommendation titles, artist names, personal data, localStorage session data, names, emails, or any identifying information. Share links do not require accounts or a database.
+
+### Limitations
+
+Share links are **reproducible configuration links, not permanent snapshots**. The link saves the seed and settings and regenerates a result using the current model and dataset. If the model or dataset changes after the link is created, results may differ.
+
+Example share URL structure:
+```
+/results?seed=<track_id>&preset=close&method=hybrid&profile=balanced&alpha=0.90&destination_mode=none&destination_weight=0.30&mmr=false&mmr_lambda=0.90&candidate_pool_size=100&k=10&view=listener&v=2.2.0
+```
+
+---
+
 ## Iteration history
 
 - See `CHANGELOG_ITERATION2.md` for Iteration 2 details.
 - See `CHANGELOG_ITERATION2_1.md` for Iteration 2.1 details.
+- See `CHANGELOG_ITERATION2_2.md` for Iteration 2.2 details.
 
 Iteration 2.1 responds to formative feedback from a small exploratory study. It does not claim statistical significance or that user satisfaction has been proven. The default balanced alpha-0.90 preset was selected based on a 100-seed offline evaluation. Raw cosine remains available in Data Science mode as "Cosine baseline (iteration 1)" for reproducibility, but is no longer the user-facing default.
